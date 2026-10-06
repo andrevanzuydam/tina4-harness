@@ -15,12 +15,13 @@ import { INotebookTracker, NotebookActions, NotebookPanel } from '@jupyterlab/no
 import { Cell } from '@jupyterlab/cells';
 import { IRenderMimeRegistry } from '@jupyterlab/rendermime';
 import { LabIcon } from '@jupyterlab/ui-components';
-import { Widget } from '@lumino/widgets';
+import { Menu, Widget } from '@lumino/widgets';
 
 const CMD = {
   check: 'tina4-harness:check-code',
   create: 'tina4-harness:create-cell',
   fix: 'tina4-harness:fix-code',
+  generate: 'tina4-harness:generate-here',
   chat: 'tina4-harness:open-chat'
 };
 
@@ -1181,16 +1182,59 @@ const plugin: JupyterFrontEndPlugin<void> = {
       }
     });
 
+    // ---- Generate here: the CELL'S OWN TEXT is the prompt; replace it with code ----
+    app.commands.addCommand(CMD.generate, {
+      label: 'Harness: Generate from this cell (replace)',
+      execute: async () => {
+        const panel = current();
+        const cell = panel?.content.activeCell;
+        if (!panel || !cell) {
+          return;
+        }
+        const prompt = cell.model.sharedModel.getSource().trim();
+        if (!prompt) {
+          await promptText('Nothing to generate', 'Type what you want in the cell first, then run this.');
+          return;
+        }
+        const id = Notification.emit('Harness: generating from your prompt…', 'in-progress');
+        let code: string;
+        try {
+          code = await kernelEdit(panel, 'create', { prompt });
+          Notification.dismiss(id);
+        } catch (e: any) {
+          Notification.update({ id, message: `Harness: ${e.message}`, type: 'error', autoClose: 5000 });
+          return;
+        }
+        // Replace the prompt text in the SAME cell with the generated code (editable first).
+        const edited = await editCodeDialog(rendermime, 'Replace cell with this code — edit & apply', code);
+        if (edited !== null) {
+          cell.model.sharedModel.setSource(edited);
+          // Only run if it won't block on input() at top level.
+          const readsInput = edited.split('\n').some(l => /\binput\s*\(/.test(l) && !/^\s/.test(l) && !l.trimStart().startsWith('#'));
+          if (!readsInput) {
+            await NotebookActions.run(panel.content, panel.sessionContext);
+          }
+        }
+      }
+    });
+
     // ---- Context menu + palette ------------------------------------------
+    // All harness actions live in their OWN "Harness" submenu in the right-click menu.
     const selector = '.jp-Notebook .jp-Cell';
+    const harnessMenu = new Menu({ commands: app.commands });
+    harnessMenu.title.label = 'Harness';
+    harnessMenu.addItem({ command: CMD.generate });
+    harnessMenu.addItem({ command: CMD.check });
+    harnessMenu.addItem({ command: CMD.create });
+    harnessMenu.addItem({ command: CMD.fix });
+    harnessMenu.addItem({ type: 'separator' });
+    harnessMenu.addItem({ command: CMD.chat });
     app.contextMenu.addItem({ type: 'separator', selector, rank: 0 });
-    app.contextMenu.addItem({ command: CMD.check, selector, rank: 1 });
-    app.contextMenu.addItem({ command: CMD.create, selector, rank: 2 });
-    app.contextMenu.addItem({ command: CMD.fix, selector, rank: 3 });
-    app.contextMenu.addItem({ type: 'separator', selector, rank: 4 });
+    app.contextMenu.addItem({ type: 'submenu', submenu: harnessMenu, selector, rank: 0.1 });
+    app.contextMenu.addItem({ type: 'separator', selector, rank: 0.2 });
 
     if (palette) {
-      [CMD.check, CMD.create, CMD.fix, CMD.chat].forEach(command =>
+      [CMD.generate, CMD.check, CMD.create, CMD.fix, CMD.chat].forEach(command =>
         palette.addItem({ command, category: 'Harness' })
       );
     }
