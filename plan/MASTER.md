@@ -45,11 +45,17 @@ This is a teaching demo, so the whole plan lives here (single file).
       model (`jupyter nbconvert --execute`) — model load, tool loop, network tools, RAG, editor
 
 ## Decisions
-- Mechanism (tools, prompts, parser, loop, RAG, editor) lives INLINE in the notebook cells — it
-  is the lesson. `src/harness/` is engine-only (model load + telemetry + cross-platform backends).
-- Model: local MLX `DeepSeek-R1-Distill-Qwen-1.5B-4bit`; torch/transformers fallback off Mac.
-- Added per request: internet-search + SWAPI API tools, Groundwire RAG A/B, highlight-and-prompt
-  cell editor, telemetry with temperature + cache controls, no-auth JupyterLab launch.
+- Mechanism (tools, prompts, parser, loop, RAG, editor, vision) lives INLINE in the notebook cells
+  — it is the lesson. `src/harness/` is engine-only (model load + telemetry + backends + vision +
+  the lab bridge).
+- Model: **Qwen3.8-2B-Distill** — a distill whose chat template natively supports tool calling and
+  which is vision-capable. The 4-bit MLX port (no HF repo) is copied into `models/qwen38-2b-distill-4bit`
+  (local-first; HF `empero-ai/Qwen3.8-2B-Distill` fallback). torch/transformers off Mac.
+- Added per request: internet-search (Wikipedia) + SWAPI tools, Groundwire RAG A/B, highlight-and-
+  prompt editor, telemetry with temperature + cache controls, no-auth JupyterLab, **vision** (§12,
+  mlx-vlm / transformers), and a from-scratch **JupyterLab extension** (`labext/`) adding right-click
+  Check Code / Create Cell / Fix Code wired to the in-kernel model (loads one if needed; 4-thread
+  queue). Nothing reused from tina4-simple-agent except the models.
 
 ## Bugs
 - [x] 1.5B distill rambled past the token budget and never emitted JSON — fixed with brief-think

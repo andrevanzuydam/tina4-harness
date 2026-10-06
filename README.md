@@ -17,9 +17,11 @@ web. The **harness** is the small program that wraps the model and turns it into
                                                   answer
 ```
 
-This repo builds that loop in the open, driven by **DeepSeek-R1-Distill-Qwen-1.5B** — a tiny
-*distill* (a small model taught by a big one). It is deliberately weak, so you can *see* every
-job the harness does to keep it on the rails.
+This repo builds that loop in the open, driven by **Qwen3.8-2B-Distill** — a tiny *distill* (a
+small model taught by a big one) whose chat template natively supports tool calling. It is
+deliberately small, so you can *see* every job the harness does to keep it on the rails. (The
+notebook still teaches *prompted* JSON tool-calling, because it shows the mechanism and works
+with any model.)
 
 Part of the [tina4stack](https://github.com/tina4stack). Scaffolded as a `tina4-python` project,
 so the harness has a real app to act on.
@@ -44,6 +46,11 @@ The cells hold the real code — read them, change them, re-run them:
     with/without comparison, then retrieval as a tool the agent can call.
 11. **A highlight-and-prompt cell editor** — paste a snippet, type a one-line instruction, get the
     small edit. You do the thinking; it does the typing.
+12. **Vision** — the same model reads an image (upload/drag, or a path), and as a tool the agent
+    can call. (Qwen3.8-2B-Distill is vision-capable.)
+13. **Right-click menus** — a JupyterLab extension (`labext/`) adds **Check Code**, **Create Cell**
+    and **Fix Code** to a cell's context menu, all powered by the notebook's own in-kernel model —
+    no server, no API key. "Create Cell" writes code (e.g. a SWAPI lookup) straight into a new cell.
 
 ---
 
@@ -51,9 +58,11 @@ The cells hold the real code — read them, change them, re-run them:
 
 ### Requirements
 - **Python 3.12**
-- **macOS (Apple Silicon)** → runs on **MLX** (Metal GPU, ~1 GB 4-bit weights). Fast.
+- **macOS (Apple Silicon)** → runs on **MLX** (Metal GPU, 4-bit weights, ~1.6 GB). Fast.
 - **Windows / Linux / Intel Mac** → runs on **PyTorch + transformers** (CPU, or NVIDIA CUDA if
-  present). The 1.5B model works on CPU; it is just slower.
+  present). The 2B model works on CPU; it is just slower.
+- **Node.js 18+** (optional) — only for the §13 right-click menus. Without it the notebook still
+  works fully; `install.sh` just skips building the extension.
 
 ### macOS / Linux
 ```bash
@@ -70,9 +79,9 @@ The cells hold the real code — read them, change them, re-run them:
 Then open the printed link — **http://127.0.0.1:8888/lab** (no token, no password; local use
 only). Change the port with `PORT=8899 ./run.sh`.
 
-> The model weights download into `models/` on first run (~1 GB on Apple Silicon). After that it
-> is fully offline. That folder is plain files — copy it to another machine to run without a
-> download.
+> The 4-bit weights live in `models/qwen38-2b-distill-4bit/` (~1.6 GB) — plain files you can copy
+> to another Mac to run without any download. On a fresh clone without that folder, the MLX
+> backend fetches the unquantised weights from Hugging Face; the PyTorch backend always does.
 
 ### Just the engine, from Python
 The notebook is the lesson, but the model-loading helper is importable:
@@ -94,8 +103,11 @@ notebooks/harness.ipynb   the teaching notebook — the main thing
 src/harness/              the engine helper (the ONLY hidden part: model loading)
   model.py                backend-agnostic adapter + Settings + telemetry
   download.py             fetch weights into models/ (portable, Windows-safe)
+  vision.py               read-an-image helper (mlx-vlm / transformers)
+  lab.py                  kernel bridge the right-click menus call (loads the model if needed)
   backends/mlx_backend.py Apple Silicon (mlx_lm)
   backends/torch_backend.py  Windows / Linux / CPU / CUDA (transformers)
+labext/                   the JupyterLab extension (TypeScript) for the right-click menus
 tests/                    real tests for the engine (no model needed): pytest tests/ -q
 requirements-notebook.txt one file, cross-platform (pip environment markers pick the engine)
 install.sh / run.sh       macOS & Linux
@@ -107,7 +119,7 @@ install.ps1 / run.ps1     Windows
 - Weights live in `models/`; delete that folder to re-download.
 
 ## Credits
-- Model: `mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit` (MLX) /
-  `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` (transformers).
+- Model: **Qwen3.8-2B-Distill** — a local 4-bit MLX conversion in `models/qwen38-2b-distill-4bit/`,
+  or `empero-ai/Qwen3.8-2B-Distill` from Hugging Face (transformers / MLX fallback).
 - RAG: [`tina4stack/groundwire`](https://github.com/tina4stack/groundwire).
 - Ideas and tool patterns lean on `tina4-simple-agent`.

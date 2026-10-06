@@ -17,8 +17,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from ..download import disk_size_gb, ensure_model
-from ..model import GB, MLX_REPO, GenStats, HarnessModel, Settings
+from ..download import MODELS_DIR, _has_weights, disk_size_gb, ensure_model
+from ..model import GB, MLX_LOCAL_DIR, MLX_REPO, GenStats, HarnessModel, Settings
 
 
 class MLXModel(HarnessModel):
@@ -29,12 +29,19 @@ class MLXModel(HarnessModel):
         from mlx_lm import load
 
         self._mx = mx
-        self.repo_id = MLX_REPO
         self.device = "metal-gpu"
         self.settings = settings or Settings()
         self.last_stats = GenStats()
 
-        self.path = ensure_model(MLX_REPO, models_dir) if models_dir else ensure_model(MLX_REPO)
+        # Prefer the project-local 4-bit folder; otherwise fetch the HF weights into models/.
+        base = Path(models_dir) if models_dir else MODELS_DIR
+        local = base / MLX_LOCAL_DIR
+        if _has_weights(local):
+            self.path = local
+            self.repo_id = MLX_LOCAL_DIR
+        else:
+            self.path = ensure_model(MLX_REPO, base, allow_download=allow_download)
+            self.repo_id = MLX_REPO
         self.disk_gb = disk_size_gb(self.path)
 
         mx.reset_peak_memory()

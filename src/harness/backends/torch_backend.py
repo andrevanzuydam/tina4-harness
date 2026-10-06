@@ -15,6 +15,7 @@ So on this backend ``set_cache_limit_gb`` is informational, and ``clear_cache()`
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -48,10 +49,26 @@ class TorchModel(HarnessModel):
         else:
             self.device = "cpu"
             dtype = torch.float32
+            # Use several CPU threads for faster generation on Windows/Linux without a GPU.
+            try:
+                torch.set_num_threads(int(os.environ.get("HARNESS_THREADS", "4")))
+            except (ValueError, RuntimeError):
+                pass
 
         t0 = time.time()
-        self.tokenizer = AutoTokenizer.from_pretrained(str(self.path))
-        self.model = AutoModelForCausalLM.from_pretrained(str(self.path), torch_dtype=dtype)
+        self.tokenizer = AutoTokenizer.from_pretrained(str(self.path), trust_remote_code=True)
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                str(self.path), torch_dtype=dtype, trust_remote_code=True
+            )
+        except (ValueError, KeyError):
+            # Qwen3.8-2B-Distill is vision-capable; load the image-text-to-text class and
+            # drive its text channel. (Text generation only — we never pass an image.)
+            from transformers import AutoModelForImageTextToText
+
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                str(self.path), torch_dtype=dtype, trust_remote_code=True
+            )
         self.model.to(self.device)
         self.model.eval()
         self.load_seconds = time.time() - t0

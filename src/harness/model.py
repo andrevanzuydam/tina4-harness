@@ -24,10 +24,13 @@ from typing import Callable
 
 GB = 1024 ** 3
 
-# Two faces of the same distilled model. MLX hosts a 4-bit port; transformers reads the
-# original weights. Both are DeepSeek-R1-Distill-Qwen-1.5B — a 1.5B reasoning *distill*.
-MLX_REPO = "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit"
-TORCH_REPO = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+# Qwen3.8-2B-Distill — a small *distill* whose chat template natively supports tool calling.
+# The 4-bit MLX port is a local conversion (there is no HF repo for it), copied into the
+# project's models/ folder (~1.6 GB). If that folder is absent (e.g. a fresh clone), the MLX
+# backend falls back to fetching the unquantised HF weights. transformers reads the same HF repo.
+MLX_LOCAL_DIR = "qwen38-2b-distill-4bit"        # preferred: a folder under models/ (~1.6 GB, 4-bit)
+MLX_REPO = "empero-ai/Qwen3.8-2B-Distill"       # fallback if the 4-bit folder is missing (~4.6 GB)
+TORCH_REPO = "empero-ai/Qwen3.8-2B-Distill"     # Windows / Linux / CPU / CUDA (transformers safetensors)
 
 
 @dataclass

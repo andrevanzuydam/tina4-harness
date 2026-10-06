@@ -12,3 +12,13 @@ models/
 workspace/
 notebooks/.ipynb_checkpoints/
 *.db
+
+# JupyterLab extension build outputs (rebuilt by install.sh)
+labext/node_modules/
+labext/lib/
+labext/tina4_harness_lab/labextension/
+labext/.yarn/
+labext/.pnp.*
+labext/tsconfig.tsbuildinfo
+notebooks/.ipynb_checkpoints/
+notebooks/uploaded.png

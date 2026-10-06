@@ -17,6 +17,7 @@ whole point of the demo, so it is not hidden in here.
 """
 from .download import disk_size_gb, ensure_model, local_path_for
 from .model import (
+    MLX_LOCAL_DIR,
     MLX_REPO,
     TORCH_REPO,
     GenStats,
@@ -34,6 +35,7 @@ __all__ = [
     "HarnessModel",
     "GenStats",
     "format_memory",
+    "MLX_LOCAL_DIR",
     "MLX_REPO",
     "TORCH_REPO",
     "ensure_model",
