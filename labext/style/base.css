@@ -45,6 +45,35 @@
   flex-direction: column;
   height: 100%;
 }
+.harness-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--jp-border-color2);
+}
+.harness-chat-ctx {
+  font-size: var(--jp-ui-font-size1);
+  font-weight: 600;
+  color: var(--jp-ui-font-color1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.harness-chat-clear {
+  flex: 0 0 auto;
+  border: 1px solid var(--jp-border-color1);
+  background: transparent;
+  color: var(--jp-ui-font-color1);
+  border-radius: 4px;
+  padding: 1px 10px;
+  font-size: var(--jp-ui-font-size0);
+  cursor: pointer;
+}
+.harness-chat-clear:hover {
+  background: var(--jp-layout-color2);
+}
 .harness-chat-log {
   flex: 1 1 auto;
   overflow: auto;
@@ -69,6 +98,12 @@
   border-radius: 8px;
   font-size: var(--jp-ui-font-size1);
   word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.harness-msg pre,
+.harness-msg code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .harness-user {
   background: var(--jp-brand-color3);

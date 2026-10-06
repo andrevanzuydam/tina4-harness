@@ -217,9 +217,42 @@ def _vision(image: str, question: str) -> str:
         from .vision import VisionModel
 
         _vision_model = VisionModel()
-    prompt = (question or "Describe this image.") + " Answer in a few sentences."
     with _lock:
-        return _vision_model.describe(str(path), prompt, max_tokens=512)
+        return _vision_model.describe(str(path), question or "Describe this image.", max_tokens=512)
+
+
+def _chat_file(key: str):
+    import hashlib
+    import re as _re
+    from .download import PROJECT_ROOT
+
+    d = PROJECT_ROOT / ".tina4" / "chat"
+    d.mkdir(parents=True, exist_ok=True)
+    safe = _re.sub(r"[^A-Za-z0-9._-]", "_", key)[-50:] if key else "scratch"
+    h = hashlib.sha1((key or "scratch").encode()).hexdigest()[:8]
+    return d / f"{safe}.{h}.json"
+
+
+def chat_fetch(key: str) -> str:
+    """Return the saved conversation as a JSON array string for a document key, or '[]'."""
+    p = _chat_file(key)
+    try:
+        if p.exists():
+            obj = json.loads(p.read_text(encoding="utf-8"))
+            msgs = obj.get("messages", obj) if isinstance(obj, dict) else obj
+            return json.dumps(msgs)
+    except Exception:
+        pass
+    return "[]"
+
+
+def chat_store(key: str, messages: list) -> str:
+    """Persist a conversation under .tina4/chat/ keyed by the document path."""
+    try:
+        _chat_file(key).write_text(json.dumps({"key": key, "messages": messages}, indent=1), encoding="utf-8")
+    except Exception as exc:
+        return f"error: {exc}"
+    return "ok"
 
 
 def harness_edit(kind: str, b64: str) -> str:
@@ -236,6 +269,10 @@ def harness_edit(kind: str, b64: str) -> str:
             text = _chat(data["messages"], data.get("context", ""))
         elif kind == "vision":
             text = _vision(data["image"], data.get("question", ""))
+        elif kind == "chat_load":
+            text = chat_fetch(data["key"])
+        elif kind == "chat_save":
+            text = chat_store(data["key"], data.get("messages", []))
         else:
             raise ValueError(f"unknown action '{kind}'")
         return "__HARNESS__" + json.dumps({"text": text})

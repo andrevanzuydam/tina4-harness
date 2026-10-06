@@ -22,3 +22,6 @@ labext/.pnp.*
 labext/tsconfig.tsbuildinfo
 notebooks/.ipynb_checkpoints/
 notebooks/uploaded.png
+
+# local chat context
+.tina4/

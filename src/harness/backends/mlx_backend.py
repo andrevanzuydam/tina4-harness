@@ -53,8 +53,8 @@ class MLXModel(HarnessModel):
         self.load_seconds = time.time() - t0
         mx.reset_peak_memory()
 
-        if self.settings.cache_limit_gb is not None:
-            self.set_cache_limit_gb(self.settings.cache_limit_gb)
+        # Cap MLX's reusable GPU buffer cache by default (keeps held memory down); override via Settings.
+        self.set_cache_limit_gb(self.settings.cache_limit_gb if self.settings.cache_limit_gb is not None else 1.0)
 
     # --- helpers ---------------------------------------------------------------------
     def _warmup(self) -> None:

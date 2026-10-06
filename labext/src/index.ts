@@ -192,6 +192,34 @@ async function appendAndRun(panel: NotebookPanel, source: string): Promise<void>
   await NotebookActions.run(panel.content, panel.sessionContext);
 }
 
+/** Select a specific cell and run it. */
+async function runCell(panel: NotebookPanel, cell: Cell): Promise<void> {
+  const i = panel.content.widgets.indexOf(cell);
+  if (i >= 0) {
+    panel.content.activeCellIndex = i;
+    await NotebookActions.run(panel.content, panel.sessionContext);
+  }
+}
+
+/** Remove a cell by widget. */
+function deleteCellWidget(panel: NotebookPanel, cell: Cell): void {
+  const i = panel.content.widgets.indexOf(cell);
+  const model: any = panel.content.model;
+  if (i >= 0 && model?.sharedModel) {
+    model.sharedModel.deleteCell(i);
+  }
+}
+
+/** Put code into the blank active cell if there is one, else append a new cell. */
+function placeCode(panel: NotebookPanel, source: string): { cell: Cell; created: boolean } {
+  const active = panel.content.activeCell;
+  if (active && active.model.type === 'code' && active.model.sharedModel.getSource().trim() === '') {
+    active.model.sharedModel.setSource(source);
+    return { cell: active, created: false };
+  }
+  return { cell: appendCell(panel, source), created: true };
+}
+
 /** Remove any stray ``` fence lines so an inserted cell is pure code. */
 function stripFences(code: string): string {
   return code
@@ -218,7 +246,12 @@ class ChatPanel extends Widget {
   private _log: HTMLDivElement;
   private _input: HTMLTextAreaElement;
   private _send: HTMLButtonElement;
+  private _ctxLabel: HTMLSpanElement;
+  private _histories = new Map<string, { role: string; content: string }[]>();
+  private _currentKey = '';
   private _messages: { role: string; content: string }[] = [];
+  private _welcome =
+    'Hi! I run on this notebook’s local model. Ask me to draft a tool or some code — I’ll offer **Insert**, **Insert & run**, or **Replace** pills, and the code goes into a cell. Highlight code first and I’ll know what “this” means. On an image tab, ask me about the picture.';
 
   constructor(
     private app: JupyterFrontEnd,
@@ -233,6 +266,19 @@ class ChatPanel extends Widget {
 
     const wrap = document.createElement('div');
     wrap.className = 'harness-chat-wrap';
+
+    const header = document.createElement('div');
+    header.className = 'harness-chat-header';
+    this._ctxLabel = document.createElement('span');
+    this._ctxLabel.className = 'harness-chat-ctx';
+    const clear = document.createElement('button');
+    clear.className = 'harness-chat-clear';
+    clear.textContent = 'Clear';
+    clear.title = 'Clear this conversation';
+    clear.onclick = () => this._clear();
+    header.appendChild(this._ctxLabel);
+    header.appendChild(clear);
+
     this._log = document.createElement('div');
     this._log.className = 'harness-chat-log';
     const row = document.createElement('div');
@@ -245,6 +291,7 @@ class ChatPanel extends Widget {
     this._send.className = 'jp-mod-styled jp-mod-accept';
     row.appendChild(this._input);
     row.appendChild(this._send);
+    wrap.appendChild(header);
     wrap.appendChild(this._log);
     wrap.appendChild(row);
     this.node.appendChild(wrap);
@@ -256,7 +303,98 @@ class ChatPanel extends Widget {
         void this._submit();
       }
     });
-    void this._append('assistant', 'Hi! I run on this notebook’s local model. Ask me to draft a tool or some code — I’ll show it with buttons to **Insert**, **Insert & run**, or **Replace** your selection. Highlight code first and I’ll know what “this” means.');
+
+    // Conversation follows the active notebook / file.
+    const shell: any = this.app.shell;
+    if (shell.currentChanged && shell.currentChanged.connect) {
+      shell.currentChanged.connect(() => void this._syncContext());
+    }
+    this.tracker.currentChanged.connect(() => void this._syncContext());
+
+    this._currentKey = '';
+    this._histories.set('', []);
+    this._messages = this._histories.get('')!;
+    this._updateCtxLabel('');
+    void this._renderLog();
+    void this._syncContext(); // load the active document's saved conversation, if any
+  }
+
+  /** Path of the active main-area document (notebook / image / file), or '' for none. */
+  private _currentDocPath(): string {
+    const w: any = (this.app.shell as any).currentWidget;
+    const p = w?.context?.path;
+    return typeof p === 'string' ? p : '';
+  }
+
+  private async _syncContext(): Promise<void> {
+    const path = this._currentDocPath();
+    if (!path || path === this._currentKey) {
+      return;
+    }
+    this._currentKey = path;
+    if (!this._histories.has(path)) {
+      let hist: { role: string; content: string }[] = [];
+      const panel = this.tracker.currentWidget;
+      if (panel) {
+        try {
+          hist = await this._loadHistory(panel, path);
+        } catch {
+          /* no saved history, or no kernel — start fresh */
+        }
+      }
+      this._histories.set(path, hist);
+    }
+    this._messages = this._histories.get(path)!;
+    this._updateCtxLabel(path);
+    await this._renderLog();
+  }
+
+  private async _loadHistory(panel: NotebookPanel, key: string): Promise<{ role: string; content: string }[]> {
+    const txt = await kernelEdit(panel, 'chat_load', { key });
+    const arr = JSON.parse(txt);
+    return Array.isArray(arr) ? arr : [];
+  }
+
+  /** Persist the current conversation to .tina4/chat/ (best-effort). */
+  private _save(): void {
+    const panel = this.tracker.currentWidget;
+    if (panel) {
+      void kernelEdit(panel, 'chat_save', { key: this._currentKey, messages: this._messages }).catch(() => undefined);
+    }
+  }
+
+  private _updateCtxLabel(key: string): void {
+    if (!key) {
+      this._ctxLabel.textContent = 'Harness chat';
+      return;
+    }
+    const name = key.split('/').pop() || key;
+    const icon = /\.ipynb$/.test(name) ? '📓 ' : /\.(png|jpe?g|gif|webp|bmp)$/i.test(name) ? '🖼 ' : '📄 ';
+    this._ctxLabel.textContent = icon + name;
+  }
+
+  private _clear(): void {
+    this._histories.set(this._currentKey, []);
+    this._messages = this._histories.get(this._currentKey)!;
+    void this._renderLog();
+    this._save();
+  }
+
+  /** Re-render the log from the current conversation (code stripped from history). */
+  private async _renderLog(): Promise<void> {
+    this._log.innerHTML = '';
+    if (!this._messages.length) {
+      await this._append('assistant', this._welcome);
+      return;
+    }
+    for (const m of this._messages) {
+      if (m.role === 'user') {
+        await this._append('user', m.content);
+      } else {
+        const { prose, blocks } = splitCode(m.content);
+        await this._append('assistant', prose || (blocks.length ? '📝 (code drafted earlier)' : m.content));
+      }
+    }
   }
 
   /** If the active main-area document is an image, return its path — else null. */
@@ -269,22 +407,25 @@ class ChatPanel extends Widget {
     return null;
   }
 
-  /** Offer generated code as action pills — the code goes into a CELL, never shown in the chat. */
+  /** Put the drafted code straight into a cell (the blank active cell, or a new one) and run it. */
   private async _offerCode(
     panel: NotebookPanel,
     code: string,
     sel: { cell: Cell; from: number; to: number } | null
   ): Promise<void> {
-    const lines = code.split('\n').length;
+    const { cell, created } = placeCode(panel, code);
+    await runCell(panel, cell);
+
     const bubble = document.createElement('div');
     bubble.className = 'harness-msg harness-assistant';
     const note = document.createElement('div');
     note.className = 'harness-codenote';
-    note.textContent = `📝 Drafted code (${lines} line${lines > 1 ? 's' : ''}) — add it to the notebook:`;
+    note.textContent = created ? '✓ Added a cell and ran it.' : '✓ Filled the blank cell and ran it.';
     bubble.appendChild(note);
 
     const pills = document.createElement('div');
     pills.className = 'harness-pills';
+    const undo = (): void => (created ? deleteCellWidget(panel, cell) : cell.model.sharedModel.setSource(''));
     const addPill = (label: string, action: () => Promise<void> | void): void => {
       const b = document.createElement('button');
       b.className = 'harness-pill';
@@ -301,10 +442,12 @@ class ChatPanel extends Widget {
       pills.appendChild(b);
     };
 
-    addPill('Insert & run', () => appendAndRun(panel, code));
-    addPill('Insert', () => void appendCell(panel, code));
+    addPill('Undo', () => undo());
     if (sel) {
-      addPill('Replace selection', () => sel.cell.model.sharedModel.updateSource(sel.from, sel.to, code));
+      addPill('Put in selection instead', () => {
+        undo();
+        sel.cell.model.sharedModel.updateSource(sel.from, sel.to, code);
+      });
     }
     bubble.appendChild(pills);
     this._log.appendChild(bubble);
@@ -351,6 +494,7 @@ class ChatPanel extends Widget {
         pending.remove();
         this._messages.push({ role: 'assistant', content: answer });
         await this._append('assistant', answer);
+        this._save();
       } catch (e: any) {
         pending.remove();
         await this._append('assistant', 'Error: ' + e.message);
@@ -399,6 +543,7 @@ class ChatPanel extends Widget {
       if (!prose && !blocks.length) {
         await this._append('assistant', '(no reply)');
       }
+      this._save();
     } catch (e: any) {
       pending.remove();
       await this._append('assistant', 'Error: ' + e.message);
