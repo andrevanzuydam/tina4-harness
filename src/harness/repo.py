@@ -146,6 +146,92 @@ def read_file(rel_path: str) -> str:
     return f.read_text(encoding="utf-8", errors="ignore")
 
 
+def search_roots() -> list[Path]:
+    """Where to look for files to load: the notebook's own folder first, then the open repo.
+
+    This is what lets the chat 'load' a file from ANY folder in the notebook space — not only from
+    a cloned repo. Override/extend the notebook root with the HARNESS_NOTEBOOK_DIR env var."""
+    import os
+
+    roots: list[Path] = []
+    nb = os.environ.get("HARNESS_NOTEBOOK_DIR")
+    roots.append(Path(nb) if nb else Path.cwd())
+    if _indexed_path:
+        roots.append(Path(_indexed_path))
+    seen, out = set(), []
+    for r in roots:
+        rp = r.resolve()
+        if rp not in seen and rp.exists():
+            seen.add(rp)
+            out.append(r)
+    return out
+
+
+def _candidate_files(limit: int = 8000) -> list[Path]:
+    """Every loadable code/text file under the notebook folder and the open repo."""
+    files: list[Path] = []
+    for root in search_roots():
+        try:
+            for f in root.rglob("*"):
+                if len(files) >= limit:
+                    break
+                if not f.is_file() or f.suffix.lower() not in CODE_EXT:
+                    continue
+                if _SKIP_DIRS & set(f.parts) or ".ipynb_checkpoints" in f.parts:
+                    continue
+                files.append(f)
+        except Exception:
+            continue
+    return files
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def find_file(hint: str) -> Path | None:
+    """Resolve a user's file reference (path, name, or bare stem) to a real file in the
+    notebook folder or the open repo. Case/separator-insensitive; prefers an exact match."""
+    hint = (hint or "").strip().strip("`'\"")
+    if not hint:
+        return None
+    # 1) Direct path, absolute or relative to a search root.
+    p = Path(hint)
+    if p.is_absolute() and p.is_file():
+        return p
+    for root in search_roots():
+        cand = root / hint
+        if cand.is_file():
+            return cand
+    # 2) Match by file name or stem across all candidate files.
+    want = _norm(hint)
+    want_stem = _norm(Path(hint).stem)
+    exact, partial = None, None
+    for f in _candidate_files():
+        name, stem = _norm(f.name), _norm(f.stem)
+        if want in (name, stem) or want_stem in (name, stem):
+            return f  # exact name/stem match wins immediately
+        if (want and want in name) or (want_stem and want_stem in stem):
+            partial = partial or f
+    return exact or partial
+
+
+def load_file(hint: str) -> tuple[str, str, str]:
+    """Load a file to drop into a cell. Returns (display_name, language, source).
+    Raises FileNotFoundError if nothing matches."""
+    f = find_file(hint)
+    if f is None:
+        raise FileNotFoundError(hint)
+    code = f.read_text(encoding="utf-8", errors="ignore")
+    ext = f.suffix.lower().lstrip(".")
+    lang = {"py": "python", "rb": "ruby", "yml": "yaml", "md": "markdown"}.get(ext, ext or "text")
+    try:
+        name = str(f.resolve().relative_to(Path.cwd().resolve()))
+    except Exception:
+        name = f.name
+    return name, lang, code
+
+
 def explain_file(rel_path: str, model=None, max_tokens: int = 700) -> str:
     """Read one file and explain its logic — what it does, the key parts, and how it flows."""
     code = read_file(rel_path)
@@ -162,25 +248,31 @@ def explain_file(rel_path: str, model=None, max_tokens: int = 700) -> str:
     return _strip_think(model.generate(messages, max_tokens=max_tokens))
 
 
-def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400) -> str:
-    """Answer a question about the cloned codebase, grounded in the retrieved code."""
+def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400, history=None) -> str:
+    """Answer a question about the cloned codebase, grounded in the retrieved code.
+
+    ``history`` (the chat so far) keeps follow-ups in context: a terse "explain its ties logic"
+    still retrieves the right file, and the model sees what was already discussed."""
     if _index is None:
         raise RuntimeError("Call open_repo(url) or index(path) first.")
     # Structure/overview questions: list EVERY top-level folder deterministically (nothing dropped),
     # described from its README first line, else its files. Standard one-bullet-per-folder format.
     if re.search(r"folder|director|structure|organi|overview|each|layout", question, re.I):
         return folder_overview()
-    chunks = _index.retrieve(question, k=k)
+    prior = [m for m in (history or []) if m.get("role") in ("user", "assistant") and m.get("content")]
+    # Retrieve using the recent user turns too, so a short follow-up still finds the right file.
+    recent_user = " ".join(m["content"] for m in prior if m["role"] == "user")[-500:]
+    query = (recent_user + " " + question).strip() if recent_user else question
+    chunks = _index.retrieve(query, k=k)
     context = "\n\n".join(text for _cid, text, _s in chunks)
     model = model or load_model()
-    messages = [
-        {"role": "system", "content":
-            "You answer questions about a codebase using ONLY the code excerpts provided. Be specific "
-            "and name the file/function. Answer in at most 5 sentences; if it is not in the excerpts, "
-            "say so. No headings."},
-        {"role": "user", "content": f"Code from the repository:\n{context[:5000]}\n\nQuestion: {question}"},
-    ]
-    return _strip_think(model.generate(messages, max_tokens=max_tokens))
+    system = {"role": "system", "content":
+        "You answer questions about a codebase using ONLY the code excerpts provided and the "
+        "conversation so far. Be specific and name the file/function. Answer in at most 5 sentences; "
+        "if it is not in the excerpts, say so. No headings."}
+    convo = [{"role": m["role"], "content": m["content"]} for m in prior[:-1][-6:]]  # drop the current turn
+    user = {"role": "user", "content": f"Code from the repository:\n{context[:5000]}\n\nQuestion: {question}"}
+    return _strip_think(model.generate([system] + convo + [user], max_tokens=max_tokens))
 
 
 def _first_doc_line(d: Path) -> str:

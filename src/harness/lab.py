@@ -367,6 +367,78 @@ def _strip_redefs_in_reply(reply: str, existing: set) -> str:
 
 _GIT_URL = re.compile(r"(git@[\w.-]+:[\w./-]+?\.git|https?://[\w.-]+/[\w./-]+?(?:\.git)?)(?=\s|$)")
 
+# File extensions a "load this file" request may name (kept in sync with repo.CODE_EXT spirit).
+_FILE_EXT = (r"py|js|ts|tsx|jsx|java|go|rs|rb|php|c|cc|cpp|h|hpp|cs|swift|kt|scala|"
+             r"md|rst|txt|json|ya?ml|toml|cfg|ini|sh|sql|html?|css")
+_FILE_RE = re.compile(r"([\w./-]+\.(?:" + _FILE_EXT + r"))\b", re.I)
+_LOAD_VERB = r"load|open|read|show|view|cat|insert|paste|pull up|bring up|import"
+
+
+def _is_load_request(text: str) -> bool:
+    """A request to LOAD a file into a cell (not a question about code)."""
+    t = text.strip()
+    # Must not be a question like "how do I open a file?"
+    if t.endswith("?") and re.search(r"\bhow\b|\bwhat\b|\bwhy\b", t, re.I):
+        return False
+    if _FILE_RE.search(t) and re.search(r"\b(" + _LOAD_VERB + r")\b", t, re.I):
+        return True
+    if re.search(r"\b(" + _LOAD_VERB + r")\b.*\b(the\s+)?(code|file|source|script)\b", t, re.I):
+        return True
+    return bool(re.search(r"\bload\s+(it|this|that|the code|the file)\b", t, re.I))
+
+
+def _recent_file_hint(messages: list) -> str:
+    """When the user says 'load the code' with no name, find the most recently mentioned file."""
+    from . import repo
+
+    for m in reversed(messages or []):
+        c = m.get("content", "")
+        fm = _FILE_RE.search(c)
+        if fm:
+            return fm.group(1)
+        # a bare stem that resolves to a real file (e.g. 'stone_paper_scissor')
+        for tok in re.findall(r"[A-Za-z][A-Za-z0-9_]{3,}", c):
+            if tok.lower() in ("code", "file", "this", "that", "load", "open", "show", "explain"):
+                continue
+            try:
+                if repo.find_file(tok) is not None:
+                    return tok
+            except Exception:
+                pass
+    return ""
+
+
+def _load_into_cell(text: str, messages: list):
+    """Resolve the named (or last-mentioned) file and return its source as a fenced block so the
+    extension inserts it into a cell. Returns None if this isn't really a load request to act on."""
+    from . import repo
+
+    fm = _FILE_RE.search(text)
+    hint = fm.group(1) if fm else ""
+    if not hint:
+        bm = re.search(r"\b(?:" + _LOAD_VERB + r")\s+(?:the\s+)?([A-Za-z0-9_./-]{3,})", text, re.I)
+        if bm and bm.group(1).lower() not in ("code", "file", "source", "script", "it", "this", "that"):
+            hint = bm.group(1)
+    if not hint:  # "load the code" / "load it" → resolve from the conversation
+        hint = _recent_file_hint(messages)
+    if not hint:
+        return ("Which file should I load? Name it — e.g. `load stone_paper_scissor.py` — or I can "
+                "load from a folder in your notebook, e.g. `load scripts/clean.py`.")
+    _status(f"📂 loading {hint}…")
+    try:
+        repo.ensure_indexed()  # make the clone's files findable even after a kernel restart
+    except Exception:
+        pass
+    try:
+        name, lang, code = repo.load_file(hint)
+    except FileNotFoundError:
+        return (f"I couldn't find a file matching **{hint}** in your notebook folder or the open repo. "
+                "Check the name, or clone/open the repo first.")
+    except Exception as exc:
+        return f"Could not load {hint}: {exc}"
+    note = f"Loaded **{name}** ({len(code.splitlines())} lines) — insert it into a cell:"
+    return f"{note}\n\n```{lang}\n{code.rstrip()}\n```"
+
 
 def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "", intent: str = "code") -> str:
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
@@ -390,6 +462,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             except Exception as exc:
                 return f"Could not clone that repo: {exc}"
 
+    # "load / open / show <file>" → read the file (from a folder in the notebook space OR the open
+    # repo) and return its source so the UI drops it into a cell. No git URL needed.
+    if _is_load_request(last_user):
+        loaded = _load_into_cell(last_user, messages)
+        if loaded is not None:
+            return loaded
+
     # If a repo is open, answer code/exploration questions FROM the repo (not the active cell).
     try:
         from . import repo as _repo
@@ -400,7 +479,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             last_user, re.I,
         ) and _repo.ensure_indexed():  # re-index the on-disk clone if this kernel has none
             _status("🔎 searching the repo…")
-            return _repo.ask_repo(last_user, max_tokens=600)
+            return _repo.ask_repo(last_user, max_tokens=600, history=messages)  # history → keeps follow-ups in context
     except Exception:
         pass
 
