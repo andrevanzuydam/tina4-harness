@@ -589,6 +589,32 @@ def _app_name(text: str) -> str:
     return "myapp"
 
 
+def _gitignore_path(path) -> None:
+    """Add a provisioned app to the enclosing repo's .gitignore so it doesn't pollute the repo."""
+    from pathlib import Path
+
+    p = Path(path).resolve()
+    root = p
+    for _ in range(12):
+        if (root / ".git").exists():
+            break
+        if root.parent == root:
+            return
+        root = root.parent
+    gi = root / ".gitignore"
+    try:
+        rel = str(p.relative_to(root)) + "/"
+    except Exception:
+        return
+    try:
+        existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
+        if rel not in existing:
+            with gi.open("a", encoding="utf-8") as f:
+                f.write(f"\n# Provisioned Tina4 app (local artifact)\n{rel}\n")
+    except Exception:
+        pass
+
+
 def _new_tina4_app(text: str) -> str:
     """Provision a new Tina4 Python app in the notebook area, start it, and open the preview."""
     from pathlib import Path
@@ -600,6 +626,7 @@ def _new_tina4_app(text: str) -> str:
     if not dest.exists() or not tina4.is_project(dest):
         _status(f"⬇️ provisioning tina4 app '{name}' (uv sync)…")
         tina4.init(dest)
+        _gitignore_path(dest)  # keep the harness repo clean — provisioned apps are local artifacts
     port = tina4.free_port(7146)
     _status(f"🚀 starting tina4 serve on :{port}…")
     url = tina4.serve(dest, port=port)

@@ -33,3 +33,4 @@ notebooks/repos/
 # Provisioned tina4 apps in the notebook area (demo artifacts)
 notebooks/tina4app/
 notebooks/*-app/
+notebooks/shop/
