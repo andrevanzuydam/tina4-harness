@@ -564,6 +564,49 @@ def _detect_tina4(open_files: str, last_user: str = "", preview_urls: list | Non
 
 
 _WROTE_SENTINEL = "@@HARNESS_WROTE@@"  # tells the extension: files written, show + refresh preview
+_APP_SENTINEL = "@@HARNESS_APP@@"      # tells the extension: open the App Preview tab at <url>
+
+
+def _is_new_app_request(text: str) -> bool:
+    """'new tina4 app called X' / 'create a tina4 project X' → provision + serve + preview."""
+    return bool(
+        re.search(r"\b(new|create|make|provision|scaffold|spin up|start)\b", text, re.I)
+        and re.search(r"\btina4\b", text, re.I)
+        and re.search(r"\b(app|application|project|site|server)\b", text, re.I)
+    )
+
+
+def _app_name(text: str) -> str:
+    m = re.search(r"\b(?:called|named)\s+([A-Za-z][\w-]*)", text, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"\btina4\s+(?:app|application|project|site)\s+([A-Za-z][\w-]*)", text, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b([A-Za-z][\w-]*)\s+(?:app|application|project|site)\b", text, re.I)
+    if m and m.group(1).lower() not in ("new", "tina4", "a", "the", "my"):
+        return m.group(1)
+    return "myapp"
+
+
+def _new_tina4_app(text: str) -> str:
+    """Provision a new Tina4 Python app in the notebook area, start it, and open the preview."""
+    from pathlib import Path
+
+    from . import tina4
+
+    name = tina4._slug(_app_name(text))
+    dest = Path.cwd() / name
+    if not dest.exists() or not tina4.is_project(dest):
+        _status(f"⬇️ provisioning tina4 app '{name}' (uv sync)…")
+        tina4.init(dest)
+    port = tina4.free_port(7146)
+    _status(f"🚀 starting tina4 serve on :{port}…")
+    url = tina4.serve(dest, port=port)
+    note = (f"Provisioned and started **{name}** at {url} — opening the preview. "
+            f"It's a standard Tina4 app in `{name}/` (routes in `src/routes/`). "
+            "Ask me to add routes/pages and they'll land in the project.")
+    return f"{_APP_SENTINEL}|{url}\n{note}"
 
 
 def _is_tina4_file_request(text: str) -> bool:
@@ -717,6 +760,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                         f"print(explain_file('Factorial.py'))\n```")
             except Exception as exc:
                 return f"Could not clone that repo: {exc}"
+
+    # "new tina4 app called X" → provision + serve + open the preview, all from the chat.
+    if _is_new_app_request(last_user):
+        try:
+            return _new_tina4_app(last_user)
+        except Exception as exc:
+            return f"Could not provision the Tina4 app: {exc}"
 
     # "load / open / show <file>" → read the file (notebook space OR open repo) and return its
     # source for direct cell insertion. No model, no comprehension — just the file. Returns None

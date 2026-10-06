@@ -484,6 +484,8 @@ function stripFences(code: string): string {
 const INSERT_SENTINEL = '@@HARNESS_INSERT@@\n';
 // Reply prefix meaning: files were written to a Tina4 project — show read-only + refresh preview.
 const WROTE_SENTINEL = '@@HARNESS_WROTE@@';
+// Reply prefix meaning: a new app was provisioned+served — open the App Preview tab at <url>.
+const APP_SENTINEL = '@@HARNESS_APP@@';
 
 /** Drop prose that is only a heading/label with no real content (e.g. "Explanation of the fix:",
  *  "Output:") — those render as big blank headers next to a code cell and say nothing. */
@@ -1186,6 +1188,18 @@ class ChatPanel extends Widget {
       );
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
+      // A new Tina4 app was provisioned + served: open the App Preview tab at its URL.
+      if (reply.startsWith(APP_SENTINEL)) {
+        const nl = reply.indexOf('\n');
+        const url = reply.slice(0, nl).split('|')[1];
+        await this._append('assistant', reply.slice(nl + 1));
+        if (url) {
+          openAppPreview(this.app, url.trim());
+        }
+        this._save();
+        this._send.disabled = false;
+        return;
+      }
       // A Tina4 file write: show the code (read-only), DON'T touch the notebook, refresh the preview.
       if (reply.startsWith(WROTE_SENTINEL)) {
         const nl = reply.indexOf('\n');

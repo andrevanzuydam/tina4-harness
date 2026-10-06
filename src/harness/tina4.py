@@ -166,6 +166,20 @@ def _slug(name: str) -> str:
     return s or "index"
 
 
+def free_port(start: int = 7146, tries: int = 30) -> int:
+    """First free TCP port at/after ``start`` (so a second app doesn't collide with the first)."""
+    import socket
+
+    for p in range(start, start + tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    return start
+
+
 def serve(cwd: str | Path, port: int = 7146, wait: bool = True, reload: bool = True) -> str:
     """Start `tina4 serve` in the BACKGROUND (so a cell never blocks). Returns the app URL.
 
