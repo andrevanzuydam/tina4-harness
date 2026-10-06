@@ -232,6 +232,39 @@ async function newNotebookWithCode(app: JupyterFrontEnd, code: string): Promise<
   }
 }
 
+/** Top-level names (functions/classes) a snippet defines. */
+function definedNames(code: string): Set<string> {
+  const names = new Set<string>();
+  const re = /^(?:def|class)\s+([A-Za-z_]\w*)/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code))) {
+    names.add(m[1]);
+  }
+  return names;
+}
+
+/** The existing code cell that defines the same names as `code` (so a fix edits it in place). */
+function findRevisionTarget(panel: NotebookPanel, code: string): Cell | null {
+  const codeNames = definedNames(code);
+  if (!codeNames.size) {
+    return null;
+  }
+  const cells = panel.content.widgets;
+  for (let i = cells.length - 1; i >= 0; i--) {
+    const c = cells[i];
+    if (c.model.type !== 'code') {
+      continue;
+    }
+    const cellNames = definedNames(c.model.sharedModel.getSource());
+    for (const n of codeNames) {
+      if (cellNames.has(n)) {
+        return c;
+      }
+    }
+  }
+  return null;
+}
+
 /** Put code into the blank active cell if there is one, else append a new cell. */
 function placeCode(panel: NotebookPanel, source: string): { cell: Cell; created: boolean } {
   const active = panel.content.activeCell;
@@ -451,31 +484,55 @@ class ChatPanel extends Widget {
   private async _offerCode(
     panel: NotebookPanel,
     code: string,
-    sel: { cell: Cell; from: number; to: number } | null
+    sel: { cell: Cell; from: number; to: number } | null,
+    isRevision: boolean
   ): Promise<void> {
-    const placed = placeCode(panel, code);
-    await runCell(panel, placed.cell);
+    // A fix/edit that redefines an existing cell's names edits THAT cell in place (no duplicate).
+    const target = isRevision ? findRevisionTarget(panel, code) : null;
+    let mode: 'created' | 'filled' | 'replaced';
+    let cell: Cell;
+    let prevSource = '';
+    if (target) {
+      prevSource = target.model.sharedModel.getSource();
+      target.model.sharedModel.setSource(code);
+      cell = target;
+      mode = 'replaced';
+    } else {
+      const r = placeCode(panel, code);
+      cell = r.cell;
+      mode = r.created ? 'created' : 'filled';
+    }
+    await runCell(panel, cell);
 
-    // Track the live cell so Undo/Redo can toggle it.
-    let cur: Cell | null = placed.cell;
-    let wasCreated = placed.created;
-    const removeCode = (): void => {
-      if (!cur) {
-        return;
-      }
-      if (wasCreated) {
-        deleteCellWidget(panel, cur);
+    let on = true;
+    const revert = (): void => {
+      if (mode === 'created') {
+        deleteCellWidget(panel, cell);
+      } else if (mode === 'filled') {
+        cell.model.sharedModel.setSource('');
       } else {
-        cur.model.sharedModel.setSource('');
+        cell.model.sharedModel.setSource(prevSource);
       }
-      cur = null;
+      on = false;
+    };
+    const reapply = async (): Promise<void> => {
+      if (mode === 'created') {
+        cell = placeCode(panel, code).cell;
+      } else {
+        cell.model.sharedModel.setSource(code);
+      }
+      await runCell(panel, cell);
+      on = true;
     };
 
     const bubble = document.createElement('div');
     bubble.className = 'harness-msg harness-assistant';
     const note = document.createElement('div');
     note.className = 'harness-codenote';
-    note.textContent = placed.created ? '✓ Added a cell and ran it.' : '✓ Filled the blank cell and ran it.';
+    note.textContent =
+      mode === 'replaced' ? '✓ Updated the existing cell and ran it.'
+      : mode === 'created' ? '✓ Added a cell and ran it.'
+      : '✓ Filled the blank cell and ran it.';
     bubble.appendChild(note);
 
     const pills = document.createElement('div');
@@ -489,16 +546,12 @@ class ChatPanel extends Widget {
       return b;
     };
 
-    // Undo ⇄ Redo toggle (never disabled).
     const toggle = mkPill('Undo', async b => {
-      if (cur) {
-        removeCode();
+      if (on) {
+        revert();
         b.textContent = 'Redo';
       } else {
-        const r = placeCode(panel, code);
-        cur = r.cell;
-        wasCreated = r.created;
-        await runCell(panel, cur);
+        await reapply();
         b.textContent = 'Undo';
       }
     });
@@ -511,16 +564,20 @@ class ChatPanel extends Widget {
     });
 
     mkPill('New notebook', async b => {
-      removeCode();
-      toggle.textContent = 'Redo';
+      if (on) {
+        revert();
+        toggle.textContent = 'Redo';
+      }
       await newNotebookWithCode(this.app, code);
       b.disabled = true;
     });
 
     if (sel) {
       mkPill('Put in selection', b => {
-        removeCode();
-        toggle.textContent = 'Redo';
+        if (on) {
+          revert();
+          toggle.textContent = 'Redo';
+        }
         sel.cell.model.sharedModel.updateSource(sel.from, sel.to, code);
         b.disabled = true;
       });
@@ -624,13 +681,14 @@ class ChatPanel extends Widget {
       });
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
-      // Code is offered with action pills (Insert / Insert & run / Replace) — not auto-run.
+      // A fix/edit request edits the matching cell in place instead of adding a duplicate.
+      const isRevision = /\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)/i.test(text);
       const { prose, blocks } = splitCode(reply);
       if (prose) {
         await this._append('assistant', prose);
       }
       for (const code of blocks) {
-        await this._offerCode(panel, code, sel);
+        await this._offerCode(panel, code, sel, isRevision);
       }
       if (!prose && !blocks.length) {
         await this._append('assistant', '(no reply)');

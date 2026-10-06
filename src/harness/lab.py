@@ -286,7 +286,10 @@ def _chat(messages: list, context: str = "", notebook_code: str = "") -> str:
     recent.reverse()
     reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, 4096))
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
-    if notebook_code:  # deterministically drop any re-definition of names already in the notebook
+    # A fix/edit request WANTS to redefine (the UI replaces the existing cell). A plain "add/use"
+    # request should NOT redefine — strip any duplicate definition of names already in the notebook.
+    is_revision = bool(re.search(r"\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)\w*", last_user, re.I))
+    if notebook_code and not is_revision:
         tidied = _strip_redefs_in_reply(tidied, _defined_names(notebook_code))
     return tidied
 
