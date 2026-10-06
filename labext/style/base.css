@@ -122,6 +122,12 @@
   font-size: var(--jp-ui-font-size1);
   color: var(--jp-ui-font-color2);
 }
+.harness-welcome {
+  padding: 8px 10px;
+  color: var(--jp-ui-font-color3);
+  font-size: var(--jp-ui-font-size0);
+  font-style: italic;
+}
 .harness-pills {
   display: flex;
   flex-wrap: wrap;

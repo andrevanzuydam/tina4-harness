@@ -273,7 +273,7 @@ class ChatPanel extends Widget {
   private _currentKey = '';
   private _messages: { role: string; content: string }[] = [];
   private _welcome =
-    'Hi! I run on this notebook’s local model. Ask me to draft a tool or some code — I’ll offer **Insert**, **Insert & run**, or **Replace** pills, and the code goes into a cell. Highlight code first and I’ll know what “this” means. On an image tab, ask me about the picture.';
+    'Draft Python code or a `@tool`, ask a Python question, or ask about an open image.';
 
   constructor(
     private app: JupyterFrontEnd,
@@ -406,7 +406,10 @@ class ChatPanel extends Widget {
   private async _renderLog(): Promise<void> {
     this._log.innerHTML = '';
     if (!this._messages.length) {
-      await this._append('assistant', this._welcome);
+      const hint = document.createElement('div');
+      hint.className = 'harness-welcome';
+      hint.textContent = this._welcome.replace(/[`*]/g, '');
+      this._log.appendChild(hint);
       return;
     }
     for (const m of this._messages) {
