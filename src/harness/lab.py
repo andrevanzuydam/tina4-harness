@@ -170,7 +170,9 @@ _CHAT_SYSTEM = (
     "```python\n@tool\ndef shout(text: str) -> str:\n    \"Uppercase some text. args: text\"\n"
     "    return text.upper()\n```\n"
     "- For a 'what is / how do I' question, answer briefly in Python terms, using the documentation "
-    "context below if given."
+    "context below if given.\n"
+    "- If code or an error is provided (a selection, the notebook, or the cell output), USE it "
+    "directly. NEVER ask the user to paste or share the code again."
 )
 
 
@@ -260,7 +262,8 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     if output:
         system_text += (
             "\n\nThe active cell's latest OUTPUT / ERROR is below. If it is an error, use it to find "
-            "the cause and fix it:\n" + output[-1800:]
+            "the cause and FIX it. The code is already provided in this message — do NOT ask the user "
+            "to share the code again; just return the corrected code:\n" + output[-1800:]
         )
     if notebook_code:
         system_text += (

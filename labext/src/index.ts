@@ -801,6 +801,11 @@ class ChatPanel extends Widget {
     const isCreate = /\b(write|build|creat|make|add|generat|implement|tool|method|function|class|script|program)/i.test(text);
     const mode: 'ask' | 'fix' | 'create' = isFix ? 'fix' : isCreate ? 'create' : 'ask';
 
+    // For a fix with no selection, give the agent the whole errored cell as the code to fix.
+    if (mode === 'fix' && !context && active) {
+      context = active.model.sharedModel.getSource();
+    }
+
     this._messages.push({ role: 'user', content: text });
     await this._append('user', text);
     await this._appendContextPreview(context, output);  // show what the agent is given
