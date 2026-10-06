@@ -371,6 +371,21 @@ class ChatPanel extends Widget {
     await this._renderLog();
   }
 
+  /** The notebook's existing code (so the model reuses names instead of redefining them). */
+  private _notebookCode(panel: NotebookPanel): string {
+    const out: string[] = [];
+    for (const c of panel.content.widgets) {
+      if (c.model.type === 'code') {
+        const s = c.model.sharedModel.getSource().trim();
+        if (s) {
+          out.push(s);
+        }
+      }
+    }
+    const code = out.join('\n\n');
+    return code.length > 4000 ? code.slice(-4000) : code;
+  }
+
   private async _loadHistory(panel: NotebookPanel, key: string): Promise<{ role: string; content: string }[]> {
     const txt = await kernelEdit(panel, 'chat_load', { key });
     const arr = JSON.parse(txt);
@@ -558,7 +573,11 @@ class ChatPanel extends Widget {
     this._send.disabled = true;
     const pending = await this._append('assistant', '…');
     try {
-      const reply = await kernelEdit(panel, 'chat', { messages: this._messages, context });
+      const reply = await kernelEdit(panel, 'chat', {
+        messages: this._messages,
+        context,
+        notebook: this._notebookCode(panel)
+      });
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
       // Code is offered with action pills (Insert / Insert & run / Replace) — not auto-run.

@@ -190,10 +190,54 @@ def _tidy_chat(reply: str, as_tool: bool) -> str:
     return head + "```python\n" + code + "\n```"
 
 
-def _chat(messages: list, context: str = "") -> str:
+def _defined_names(code: str) -> set:
+    """Top-level names a chunk of code defines (functions, classes, simple assignments)."""
+    names = set()
+    for m in re.finditer(r"^(?:def|class)\s+([A-Za-z_]\w*)", code, re.M):
+        names.add(m.group(1))
+    for m in re.finditer(r"^([A-Za-z_]\w*)\s*=", code, re.M):
+        names.add(m.group(1))
+    return names
+
+
+def _drop_redefs(code: str, existing: set) -> str:
+    """Remove top-level def/class blocks that redefine a name already in the notebook."""
+    lines = code.split("\n")
+    out: list = []
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^(?:def|class)\s+([A-Za-z_]\w*)", lines[i])
+        if m and m.group(1) in existing:
+            i += 1
+            while i < len(lines) and (lines[i].strip() == "" or lines[i][:1] in (" ", "\t")):
+                i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out).strip()
+
+
+def _strip_redefs_in_reply(reply: str, existing: set) -> str:
+    """Within a tidied reply, drop code that redefines existing notebook names."""
+    m = _FENCE.search(reply)
+    if not m:
+        return reply
+    cleaned = _drop_redefs(m.group(1), existing)
+    if not cleaned:
+        return reply.replace(m.group(0), "").strip() or "(nothing new to add)"
+    return reply[: m.start()] + "```python\n" + cleaned + "\n```" + reply[m.end():]
+
+
+def _chat(messages: list, context: str = "", notebook_code: str = "") -> str:
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
     # Qwen's template allows only ONE system message, so fold everything into it.
     system_text = _CHAT_SYSTEM
+    if notebook_code:
+        system_text += (
+            "\n\nThe notebook ALREADY contains this code — reuse these names and do NOT rewrite or "
+            "redefine them. Write ONLY the new code the user asks for (e.g. just the call, not the "
+            "function again):\n```python\n" + notebook_code[-4000:] + "\n```"
+        )
     if context:
         system_text += (
             "\n\nThe user has SELECTED this code in the notebook; when they say 'this', 'it', or "
@@ -221,7 +265,10 @@ def _chat(messages: list, context: str = "") -> str:
         used += c
     recent.reverse()
     reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, 900))
-    return _tidy_chat(reply, as_tool="tool" in last_user.lower())
+    tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
+    if notebook_code:  # deterministically drop any re-definition of names already in the notebook
+        tidied = _strip_redefs_in_reply(tidied, _defined_names(notebook_code))
+    return tidied
 
 
 def _looks_like_question(text: str) -> bool:
@@ -298,7 +345,7 @@ def harness_edit(kind: str, b64: str) -> str:
         elif kind == "fix":
             text = _fix(data["code"], data["instruction"])
         elif kind == "chat":
-            text = _chat(data["messages"], data.get("context", ""))
+            text = _chat(data["messages"], data.get("context", ""), data.get("notebook", ""))
         elif kind == "vision":
             text = _vision(data["image"], data.get("question", ""))
         elif kind == "chat_load":
