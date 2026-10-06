@@ -646,6 +646,63 @@ class ChatPanel extends Widget {
     this._log.scrollTop = this._log.scrollHeight;
   }
 
+  /** Apply a fix by editing the selection (or the active/errored cell) IN PLACE — never appends. */
+  private async _applyFix(
+    panel: NotebookPanel,
+    code: string,
+    sel: { cell: Cell; from: number; to: number } | null
+  ): Promise<void> {
+    const cell = sel ? sel.cell : panel.content.activeCell;
+    if (!cell) {
+      await this._append('assistant', 'Select the code to fix, or click the cell with the error, then ask again.');
+      return;
+    }
+    const prev = cell.model.sharedModel.getSource();
+    const fixed = sel ? prev.slice(0, sel.from) + code + prev.slice(sel.to) : code;
+    cell.model.sharedModel.setSource(fixed);
+    await runCell(panel, cell);
+
+    const bubble = document.createElement('div');
+    bubble.className = 'harness-msg harness-assistant';
+    const note = document.createElement('div');
+    note.className = 'harness-codenote';
+    note.textContent = sel ? '✓ Fixed the selected code in place.' : '✓ Fixed the cell in place.';
+    bubble.appendChild(note);
+
+    const pills = document.createElement('div');
+    pills.className = 'harness-pills';
+    const mkPill = (label: string, onClick: (b: HTMLButtonElement) => Promise<void> | void): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.className = 'harness-pill';
+      b.textContent = label;
+      b.onclick = () => void onClick(b);
+      pills.appendChild(b);
+      return b;
+    };
+    let on = true;
+    mkPill('Undo', async b => {
+      if (on) {
+        cell.model.sharedModel.setSource(prev);
+        on = false;
+        b.textContent = 'Redo';
+      } else {
+        cell.model.sharedModel.setSource(fixed);
+        await runCell(panel, cell);
+        on = true;
+        b.textContent = 'Undo';
+      }
+    });
+    mkPill('Copy', b => {
+      void navigator.clipboard.writeText(code);
+      const p = b.textContent;
+      b.textContent = 'Copied';
+      setTimeout(() => (b.textContent = p), 1000);
+    });
+    bubble.appendChild(pills);
+    this._log.appendChild(bubble);
+    this._log.scrollTop = this._log.scrollHeight;
+  }
+
   private async _append(role: string, content: string): Promise<HTMLElement> {
     const bubble = document.createElement('div');
     bubble.className = 'harness-msg harness-' + role;
@@ -738,9 +795,11 @@ class ChatPanel extends Widget {
     // The active cell's output/error, so the model can help fix problems.
     const active = panel.content.activeCell;
     const output = active ? cellOutputText(active) : '';
-    // A question gets an EXPLANATION (nothing inserted); a build/fix request writes code.
-    const wantsCode =
-      /\b(write|build|create|make|add|fix|edit|update|change|refactor|implement|generate|rewrite|tool|method|function|class|script)\b/i.test(text);
+    // Three modes: a QUESTION explains (no cell); a FIX edits in place (no new cell); only a
+    // CREATE/build/add request writes a NEW cell. Debugging never spams cells.
+    const isFix = /\b(fix|debug|edit|updat|chang|refactor|rewrit|modif|correct|repair|solve)/i.test(text);
+    const isCreate = /\b(write|build|creat|make|add|generat|implement|tool|method|function|class|script|program)/i.test(text);
+    const mode: 'ask' | 'fix' | 'create' = isFix ? 'fix' : isCreate ? 'create' : 'ask';
 
     this._messages.push({ role: 'user', content: text });
     await this._append('user', text);
@@ -754,21 +813,24 @@ class ChatPanel extends Widget {
         context,
         notebook: this._notebookCode(panel),
         output,
-        intent: wantsCode ? 'code' : 'ask'
+        intent: mode === 'ask' ? 'ask' : 'code'
       });
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
-      if (!wantsCode) {
+      if (mode === 'ask') {
         // A question: show the explanation in the chat, insert nothing.
         await this._append('assistant', reply || '(no reply)');
       } else {
-        const isRevision = /\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)/i.test(text);
         const { prose, blocks } = splitCode(reply);
         if (prose) {
           await this._append('assistant', prose);
         }
         for (const code of blocks) {
-          await this._offerCode(panel, code, sel, isRevision);
+          if (mode === 'fix') {
+            await this._applyFix(panel, code, sel);   // edit in place — never append
+          } else {
+            await this._offerCode(panel, code, sel, false);
+          }
         }
         if (!prose && !blocks.length) {
           await this._append('assistant', '(no reply)');
