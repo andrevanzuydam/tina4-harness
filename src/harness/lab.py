@@ -163,6 +163,8 @@ _CHAT_SYSTEM = (
     "RULES:\n"
     "- Reply with AT MOST ONE ```python code block plus one short sentence of prose. ALWAYS write the "
     "real, complete, runnable code — NEVER a placeholder like '[your code here]' or '[complete solution]'.\n"
+    "- For a build/create/write-code request, go STRAIGHT to the code block. Do NOT write a plan, an "
+    "outline, or a bulleted list of what the code will contain.\n"
     "- To add a TOOL, define a function decorated with @tool whose one-line docstring ends with "
     "'args: <names>' and returns a string; do NOT call run_agent yourself. Example:\n"
     "```python\n@tool\ndef shout(text: str) -> str:\n    \"Uppercase some text. args: text\"\n"
@@ -170,6 +172,16 @@ _CHAT_SYSTEM = (
     "- For a 'what is / how do I' question, answer briefly in Python terms, using the documentation "
     "context below if given."
 )
+
+
+def _cap_prose(text: str, limit: int = 700) -> str:
+    """Trim a long prose answer at a sentence/line boundary so the chat doesn't overflow."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    dot = max(cut.rfind(". "), cut.rfind("\n"))
+    return (cut[: dot + 1] if dot > limit // 2 else cut).rstrip() + " …"
 
 
 def _tidy_chat(reply: str, as_tool: bool) -> str:
@@ -184,7 +196,9 @@ def _tidy_chat(reply: str, as_tool: bool) -> str:
             blocks = [opened.group(1).strip()]
             prose = reply[: opened.start()].strip()
         else:
-            return reply
+            # Pure prose (e.g. a 'what is' answer or an unwanted plan): cap it so it can't
+            # overflow the chat with a wall of text.
+            return _cap_prose(reply)
     code = "\n".join(
         ln for ln in blocks[0].splitlines()
         if not ln.strip().startswith(">>>") and not ln.strip().startswith("...")
