@@ -851,7 +851,11 @@ class ChatPanel extends Widget {
     // CREATE/build/add request writes a NEW cell. Debugging never spams cells.
     const isFix = /\b(fix|debug|edit|updat|chang|refactor|rewrit|modif|correct|repair|solve)/i.test(text);
     const isCreate = /\b(write|build|creat|make|add|generat|implement|tool|method|function|class|script|program)/i.test(text);
-    const mode: 'ask' | 'fix' | 'create' = isFix ? 'fix' : isCreate ? 'create' : 'ask';
+    const hasError = /error|traceback/i.test(output);
+    const isQuestion = /\b(what|why|how|explain|mean)\b/i.test(text);
+    // With an error present and no clear question, assume you want it fixed.
+    const mode: 'ask' | 'fix' | 'create' =
+      isFix ? 'fix' : isCreate ? 'create' : hasError && !isQuestion ? 'fix' : 'ask';
 
     // For a fix with no selection, give the agent the whole errored cell as the code to fix.
     if (mode === 'fix' && !context && active) {

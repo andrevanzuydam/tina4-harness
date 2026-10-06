@@ -122,7 +122,7 @@ def _create(prompt: str) -> str:
             "the request explicitly asks for it."},
         {"role": "user", "content": prompt},
     ]
-    return _code(_generate(messages, 4096))
+    return _codegen(messages, 4096)
 
 
 def _check(code: str) -> str:
@@ -136,23 +136,18 @@ def _check(code: str) -> str:
 
 
 def _fix(code: str, instruction: str) -> str:
-    # Reuse the notebook's own edit_code() if the reader defined one; otherwise do it here.
-    try:
-        from IPython import get_ipython
-
-        ip = get_ipython()
-        edit_code = ip.user_ns.get("edit_code") if ip is not None else None
-        if callable(edit_code):
-            return edit_code(code, instruction)
-    except Exception:
-        pass
+    # Known non-Python syntax (??, &&, ...) is fixed deterministically — always correct.
+    det = _deterministic_fix(code)
+    if det != code and _valid_python(det)[0]:
+        return det
     messages = [
         {"role": "system", "content":
-            "You edit code. Apply the instruction and return ONLY the edited code in one ``` "
-            "block. No explanation."},
+            "You edit Python code. Apply the instruction and return ONLY the corrected, valid Python "
+            "in one ``` block. No explanation. Python has no ?? (use `x if x is not None else y`), "
+            "no && (use `and`), no || (use `or`), no === (use ==)."},
         {"role": "user", "content": f"Instruction: {instruction}\n\nCode:\n```\n{code}\n```"},
     ]
-    return _code(_generate(messages, 4096))
+    return _codegen(messages, 4096)
 
 
 _CHAT_SYSTEM = (
@@ -192,6 +187,62 @@ _PLACEHOLDER = re.compile(
     r"|#\s*(your code|todo|implement|complete this)",
     re.I,
 )
+
+
+_NONPY = [
+    (r"\?\?", "Python has no `??` — use `x if x is not None else y`"),
+    (r"&&", "Python uses `and`, not `&&`"),
+    (r"\|\|", "Python uses `or`, not `||`"),
+    (r"===", "Python uses `==`, not `===`"),
+    (r"!==", "Python uses `!=`, not `!==`"),
+    (r"\+\+", "Python has no `++` — use `x += 1`"),
+]
+
+
+def _py_hint(code: str) -> str:
+    """Deterministic hints for common non-Python syntax a beginner (or the model) may use."""
+    return "; ".join(msg for pat, msg in _NONPY if re.search(pat, code))
+
+
+def _deterministic_fix(code: str) -> str:
+    """Rewrite common non-Python syntax to valid Python — no model needed, always correct."""
+    out = code
+    # null-coalescing: X ?? Y  ->  X if X is not None else Y
+    out = re.sub(r"([\w.\[\]()]+)\s*\?\?\s*([\w.\[\]()'\".+\- ]+?)(\s*(?:#.*)?)$",
+                 r"\1 if \1 is not None else \2\3", out, flags=re.M)
+    out = re.sub(r"([\w.\[\]()]+)\s*\?\?\s*([\w.\[\]()'\".]+)", r"\1 if \1 is not None else \2", out)
+    out = out.replace("===", "==").replace("!==", "!=")
+    out = re.sub(r"\s*&&\s*", " and ", out)
+    out = re.sub(r"\s*\|\|\s*", " or ", out)
+    return out
+
+
+def _valid_python(code: str):
+    """(ok, message). ok is False only for a real SyntaxError."""
+    try:
+        compile(code, "<cell>", "exec")
+        return True, ""
+    except SyntaxError as e:
+        return False, f"{e.msg} (line {e.lineno})"
+    except Exception:
+        return True, ""  # runtime/name issues aren't a syntax problem
+
+
+def _codegen(messages: list, max_tokens: int) -> str:
+    """Generate code, then syntax-check it and retry ONCE with the error fed back."""
+    code = _code(_generate(messages, max_tokens))
+    if _is_placeholder(code):
+        return code
+    ok, err = _valid_python(code)
+    if ok:
+        return code
+    retry = list(messages) + [
+        {"role": "assistant", "content": "```python\n" + code + "\n```"},
+        {"role": "user", "content": f"That has a Python syntax error: {err}. {_py_hint(code)}. "
+                                    "Return ONLY the corrected, valid Python code."},
+    ]
+    fixed = _code(_generate(retry, max_tokens))
+    return fixed if _valid_python(fixed)[0] else code
 
 
 def _is_placeholder(code: str) -> bool:
@@ -275,6 +326,12 @@ def _strip_redefs_in_reply(reply: str, existing: set) -> str:
 
 def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "", intent: str = "code") -> str:
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+    # Known non-Python syntax (??, &&, ||, ===) in the code being fixed → fix it deterministically,
+    # no model guessing. This is always correct, which matters for beginners.
+    if intent == "code" and context.strip():
+        det = _deterministic_fix(context)
+        if det != context and _valid_python(det)[0] and not _valid_python(context)[0]:
+            return "Rewrote the non-Python syntax to valid Python:\n\n```python\n" + det.strip() + "\n```"
     # Qwen's template allows only ONE system message, so fold everything into it.
     system_text = _CHAT_SYSTEM
     if intent == "ask":
