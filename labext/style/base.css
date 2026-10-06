@@ -7,6 +7,21 @@
   box-sizing: border-box;
 }
 
+.harness-dialog .harness-codearea {
+  display: block;
+  width: 48em;
+  max-width: 78vw;
+  min-height: 6em;
+  max-height: 55vh;
+  margin-top: 8px;
+  padding: 6px 8px;
+  box-sizing: border-box;
+  white-space: pre;
+  overflow: auto;
+  font-family: var(--jp-code-font-family, monospace);
+  font-size: var(--jp-code-font-size, 13px);
+}
+
 .harness-dialog .harness-pre {
   max-width: 60vw;
   max-height: 55vh;

@@ -186,6 +186,26 @@ def _cap_prose(text: str, limit: int = 700) -> str:
     return (cut[: dot + 1] if dot > limit // 2 else cut).rstrip() + " …"
 
 
+_PLACEHOLDER = re.compile(
+    r"\[\s*(complete|full|your|the|insert|add)\b[^\]]*\]"
+    r"|\[[^\]]*\b(solution|code|implementation|logic|here)\b[^\]]*\]"
+    r"|#\s*(your code|todo|implement|complete this)",
+    re.I,
+)
+
+
+def _is_placeholder(code: str) -> bool:
+    """True if the model emitted a stub instead of real code (e.g. '[complete solution]')."""
+    s = code.strip()
+    if not s:
+        return True
+    if _PLACEHOLDER.search(s):
+        return True
+    if s.startswith("[") and s.endswith("]") and "\n" not in s:
+        return True
+    return False
+
+
 def _tidy_chat(reply: str, as_tool: bool) -> str:
     """Keep a chat reply notebook-friendly: at most one clean ```python block, one line of prose.
     Drops REPL (>>> / ...) example lines, and adds @tool when the user asked for a tool."""
@@ -205,6 +225,9 @@ def _tidy_chat(reply: str, as_tool: bool) -> str:
         ln for ln in blocks[0].splitlines()
         if not ln.strip().startswith(">>>") and not ln.strip().startswith("...")
     ).strip()
+    if _is_placeholder(code):
+        # Never hand a beginner a stub like '[complete solution]'. Ask once, in plain words.
+        return "I didn't produce usable code there — select the exact line or cell and ask again, or add a little more detail about what it should do."
     if as_tool and code.startswith("def ") and "@tool" not in code:
         code = "@tool\n" + code
     first_line = prose.splitlines()[0].strip() if prose else ""
@@ -276,11 +299,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             "\n\nThe user has SELECTED this code in the notebook; when they say 'this', 'it', or "
             "'the selection', they mean it:\n```python\n" + context + "\n```"
         )
-    if _looks_like_question(last_user):  # ground factual Python questions in the stdlib docs
+    # Ground questions AND error-fixes in the stdlib docs (help beginners get correct Python).
+    if _looks_like_question(last_user) or output:
         try:
             from . import pyhelp
 
-            docs = "\n\n".join(t[:600] for t, _s in pyhelp.search(last_user, k=2))
+            query = (last_user + " " + output.splitlines()[0]) if output else last_user
+            docs = "\n\n".join(t[:600] for t, _s in pyhelp.search(query, k=2))
             if docs:
                 system_text += "\n\nRelevant Python documentation (use if helpful, ignore if not):\n" + docs
         except Exception:

@@ -130,6 +130,52 @@ async function promptText(title: string, placeholder: string, okLabel = 'Run'): 
   return body.getValue().trim() || null;
 }
 
+/** A dialog body with an optional rendered review and an EDITABLE code area. */
+class EditCodeBody extends Widget {
+  private _ta: HTMLTextAreaElement;
+  constructor(code: string, reviewNode?: HTMLElement) {
+    super();
+    this.addClass('harness-dialog');
+    if (reviewNode) {
+      this.node.appendChild(reviewNode);
+    }
+    this._ta = document.createElement('textarea');
+    this._ta.className = 'harness-codearea';
+    this._ta.value = code;
+    this._ta.spellcheck = false;
+    this._ta.rows = Math.min(26, Math.max(4, code.split('\n').length + 1));
+    this.node.appendChild(this._ta);
+    setTimeout(() => this._ta.focus(), 0);
+  }
+  getValue(): string {
+    return this._ta.value;
+  }
+}
+
+/** Show an editable code area (with an optional review) — returns the edited code, or null. */
+async function editCodeDialog(
+  rendermime: IRenderMimeRegistry,
+  title: string,
+  code: string,
+  reviewMd?: string
+): Promise<string | null> {
+  let reviewNode: HTMLElement | undefined;
+  if (reviewMd) {
+    const r = rendermime.createRenderer('text/markdown');
+    await r.renderModel(rendermime.createModel({ data: { 'text/markdown': reviewMd }, trusted: true }));
+    reviewNode = document.createElement('div');
+    reviewNode.className = 'harness-md';
+    reviewNode.appendChild(r.node);
+  }
+  const body = new EditCodeBody(code, reviewNode);
+  const result = await showDialog({
+    title,
+    body,
+    buttons: [Dialog.cancelButton(), Dialog.okButton({ label: 'Apply to cell' })]
+  });
+  return result.button.accept ? body.getValue() : null;
+}
+
 /** Render Markdown (incl. tables and ```code``` with highlighting) into a dialog body widget. */
 async function markdownWidget(rendermime: IRenderMimeRegistry, md: string): Promise<Widget> {
   const renderer = rendermime.createRenderer('text/markdown');
@@ -658,7 +704,13 @@ class ChatPanel extends Widget {
       return;
     }
     const prev = cell.model.sharedModel.getSource();
-    const fixed = sel ? prev.slice(0, sel.from) + code + prev.slice(sel.to) : code;
+    const proposed = sel ? prev.slice(0, sel.from) + code + prev.slice(sel.to) : code;
+    // Show the whole proposed cell in an editable area — you review/correct, then Apply.
+    const fixed = await editCodeDialog(this.rendermime, 'Review the fix — edit & apply', proposed);
+    if (fixed === null) {
+      await this._append('assistant', '(fix cancelled — nothing changed)');
+      return;
+    }
     cell.model.sharedModel.setSource(fixed);
     await runCell(panel, cell);
 
@@ -889,12 +941,12 @@ const plugin: JupyterFrontEndPlugin<void> = {
         try {
           const review = await kernelEdit(panel, 'check', { code });
           Notification.dismiss(id);
-          const body = await markdownWidget(rendermime, review);
-          await showDialog({
-            title: 'Harness — code review',
-            body,
-            buttons: [Dialog.okButton({ label: 'Close' })]
-          });
+          // Show the review AND an editable copy of the cell — Apply writes it back and runs.
+          const edited = await editCodeDialog(rendermime, 'Code review — edit & apply', code, review);
+          if (edited !== null && edited !== code) {
+            cell.model.sharedModel.setSource(edited);
+            await NotebookActions.run(panel.content, panel.sessionContext);
+          }
         } catch (e: any) {
           Notification.update({ id, message: `Harness: ${e.message}`, type: 'error', autoClose: 5000 });
         }
@@ -962,11 +1014,15 @@ const plugin: JupyterFrontEndPlugin<void> = {
           Notification.update({ id, message: `Harness: ${e.message}`, type: 'error', autoClose: 5000 });
           return;
         }
-        const choice = await proposeCode(rendermime, `Suggested fix (${scope})`, fixed, true);
-        if (choice === 'replace') {
-          cell.model.sharedModel.updateSource(from, to, fixed);
-        } else if (choice === 'insert') {
-          insertBelowWithSource(panel, fixed);
+        // Editable area so you can correct the suggestion before it touches your cell.
+        const edited = await editCodeDialog(rendermime, `Fix ${scope} — edit & apply`, fixed);
+        if (edited !== null) {
+          if (scope === 'selection') {
+            cell.model.sharedModel.updateSource(from, to, edited);
+          } else {
+            cell.model.sharedModel.setSource(edited);
+          }
+          await NotebookActions.run(panel.content, panel.sessionContext);
         }
       }
     });
