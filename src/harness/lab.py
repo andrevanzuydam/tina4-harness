@@ -394,11 +394,11 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     try:
         from . import repo as _repo
 
-        if _repo._index is not None and re.search(
+        if re.search(
             r"\b(repo|repositor|codebase|folder|directory|director|structure|organi[sz]|"
             r"what (does|is)|how (does|is)|summar|overview|explain|where|which file|list)\b",
             last_user, re.I,
-        ):
+        ) and _repo.ensure_indexed():  # re-index the on-disk clone if this kernel has none
             _status("🔎 searching the repo…")
             return _repo.ask_repo(last_user, max_tokens=600)
     except Exception:

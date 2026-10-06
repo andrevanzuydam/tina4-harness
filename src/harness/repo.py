@@ -85,6 +85,24 @@ def open_repo(url: str, name: str | None = None, depth: int = 1):
     return dest, n
 
 
+def ensure_indexed() -> bool:
+    """If nothing is indexed in this kernel, index the most recent repo already cloned on disk."""
+    global _index
+    if _index is not None:
+        return True
+    cands: list[Path] = []
+    for base in (_repos_dir(), Path.cwd() / "repos", Path.cwd().parent / "repos"):
+        try:
+            if base.exists():
+                cands += [d for d in base.iterdir() if d.is_dir() and any(d.iterdir())]
+        except Exception:
+            pass
+    if not cands:
+        return False
+    index(max(cands, key=lambda p: p.stat().st_mtime))
+    return True
+
+
 def search_repo(query: str, k: int | None = None) -> list[tuple[str, float]]:
     """Return (text, score) code chunks matching a query (titles carry the file path)."""
     if _index is None:
