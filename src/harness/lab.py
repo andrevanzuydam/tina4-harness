@@ -561,6 +561,17 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             "'this code', or a function/name that appears here, they mean THIS — use it to answer:\n"
             "```python\n" + open_files.strip()[:8000] + "\n```"
         )
+        # "use / run / call / demo the open file" → adapt it into runnable cell code, don't paste
+        # an interactive script (a bare input()/main() just hangs a cell).
+        if intent != "ask" and re.search(r"\b(use|run|call|demo|try|execute|exercise|invoke)\b", last_user, re.I):
+            system_text += (
+                "\n\nThe user wants to USE the open file's logic in this cell. Write a SELF-CONTAINED, "
+                "runnable cell that defines whatever functions it needs (adapt them from the open file) "
+                "and then CALLS them with a concrete example value, printing the result. Do NOT call "
+                "input() — substitute a literal (e.g. 27). Do NOT paste the file's interactive main()/"
+                "__main__ block verbatim, and do NOT try to import a file whose name isn't a valid "
+                "Python module (e.g. one with a hyphen)."
+            )
     if notebook_code:
         system_text += (
             "\n\nThe notebook ALREADY contains this code — reuse these names and do NOT rewrite or "
