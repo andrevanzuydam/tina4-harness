@@ -350,13 +350,21 @@ def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400, histo
     # described from its README first line, else its files. Standard one-bullet-per-folder format.
     if re.search(r"folder|director|structure|organi|overview|each|layout", question, re.I):
         return folder_overview()
+    # "list / show / what programs|files|scripts" → the ACTUAL files in the repo, deterministically
+    # (never a model-invented list). Grounded, so it can't hallucinate variants of one file.
+    if re.search(r"\b(list|show|which|what|name)\b", question, re.I) and \
+       re.search(r"\b(program|file|script|module|example|demo|command|app)s?\b", question, re.I):
+        return program_overview()
     prior = [m for m in (history or []) if m.get("role") in ("user", "assistant") and m.get("content")]
     # Retrieve using the recent user turns too, so a short follow-up still finds the right file.
     recent_user = " ".join(m["content"] for m in prior if m["role"] == "user")[-500:]
     query = (recent_user + " " + question).strip() if recent_user else question
     chunks = _index.retrieve(query, k=k)
     context = "\n\n".join(text for _cid, text, _s in chunks)
-    if open_code.strip():
+    # Only let the OPEN file dominate when the question is about it ("this"/"the file"/"it") — never
+    # for a repo-wide question, where it would bias the answer toward whatever happens to be open.
+    if open_code.strip() and re.search(r"\b(this|the file|that|it|open|current|selection|here|above)\b",
+                                       question, re.I):
         context = ("Currently OPEN in the notebook — the user likely means THIS when they say "
                    "'this', 'the file', or 'it':\n" + open_code.strip()[:4000] + "\n\n"
                    "Other relevant code from the repository:\n" + context)
@@ -384,6 +392,50 @@ def _first_doc_line(d: Path) -> str:
             except Exception:
                 return ""
     return ""
+
+
+def _py_summary(f: Path) -> str:
+    """One-line description of a Python file: its module docstring's first line, else first comment."""
+    try:
+        text = f.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+    m = re.search(r'^\s*(?:"""|\'\'\')(.*?)(?:"""|\'\'\')', text, re.S)
+    if m:
+        for ln in m.group(1).splitlines():
+            s = ln.strip()
+            if s:
+                return s[:100]
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("#"):
+            s = s.lstrip("#").strip()
+            if s:
+                return s[:100]
+        elif s:
+            break
+    return ""
+
+
+def program_overview(limit: int = 50) -> str:
+    """A deterministic, grounded list of the actual Python programs in the open repo (never
+    model-invented). Each line: the real relative path + its module docstring's first line."""
+    root = _repo_root()
+    files = []
+    for f in sorted(root.rglob("*.py")):
+        if _SKIP_DIRS & set(f.parts) or ".ipynb_checkpoints" in f.parts:
+            continue
+        files.append(f)
+    total = len(files)
+    shown = files[:limit]
+    head = (f"**{total} Python programs in {root.name}**"
+            + (f" (showing the first {limit}):" if total > limit else ":"))
+    lines = [head, ""]
+    for f in shown:
+        rel = f.relative_to(root)
+        desc = _py_summary(f)
+        lines.append(f"- `{rel}`" + (f" — {desc}" if desc else ""))
+    return "\n".join(lines)
 
 
 def folder_overview() -> str:
