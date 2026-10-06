@@ -83,6 +83,10 @@
 .harness-assistant > *:last-child {
   margin-bottom: 0;
 }
+.harness-codenote {
+  font-size: var(--jp-ui-font-size1);
+  color: var(--jp-ui-font-color2);
+}
 .harness-pills {
   display: flex;
   flex-wrap: wrap;

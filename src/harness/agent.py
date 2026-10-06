@@ -28,6 +28,7 @@ from pathlib import Path
 
 from .download import PROJECT_ROOT
 from .model import load_model
+from .pyhelp import ask_python  # grounded Python Q&A, available after `from harness.agent import *`
 
 WORKSPACE = PROJECT_ROOT / "workspace"
 TOOLS: dict = {}
@@ -107,6 +108,14 @@ def star_wars(resource: str) -> str:
     if isinstance(data, dict):
         return json.dumps({k: data[k] for k in list(data)[:6]})
     return json.dumps(data[:3])
+
+
+@tool
+def python_help(query: str) -> str:
+    "Look up Python standard-library documentation (grounded via Groundwire). args: query"
+    from . import pyhelp
+    hits = pyhelp.search(query, k=3)
+    return "\n\n".join(text[:700] for text, _s in hits) or "no matching docs"
 
 
 @tool

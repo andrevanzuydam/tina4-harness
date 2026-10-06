@@ -100,11 +100,14 @@ print(model.generate([{"role": "user", "content": "hello"}]))
 
 ```
 notebooks/harness.ipynb   the teaching notebook — the main thing
+notebooks/demo.ipynb      a clean demo: setup hidden & auto-run, chat + right-click refactoring
 src/harness/              the engine helper (the ONLY hidden part: model loading)
   model.py                backend-agnostic adapter + Settings + telemetry
   download.py             fetch weights into models/ (portable, Windows-safe)
   vision.py               read-an-image helper (mlx-vlm / transformers)
-  lab.py                  kernel bridge the right-click menus call (loads the model if needed)
+  pyhelp.py               grounded Python help: pydoc → help file → Groundwire → ask_python()
+  agent.py                packaged harness (tools, loop, setup()) for the clean demo
+  lab.py                  kernel bridge the menus + chat call (loads the model if needed)
   backends/mlx_backend.py Apple Silicon (mlx_lm)
   backends/torch_backend.py  Windows / Linux / CPU / CUDA (transformers)
 labext/                   the JupyterLab extension (TypeScript) for the right-click menus

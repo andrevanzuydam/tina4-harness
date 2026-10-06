@@ -200,6 +200,27 @@ def _chat(messages: list, context: str = "") -> str:
     return _tidy_chat(reply, as_tool="tool" in last_user.lower())
 
 
+_vision_model = None
+
+
+def _vision(image: str, question: str) -> str:
+    """Answer a question about an image using the vision model (loaded once, lazily)."""
+    global _vision_model
+    from pathlib import Path
+
+    path = Path(image)
+    if not path.is_absolute():
+        path = Path.cwd() / image      # the kernel's cwd is the notebook folder
+    if not path.is_file():
+        return f"Could not find the image at {path}."
+    if _vision_model is None:
+        from .vision import VisionModel
+
+        _vision_model = VisionModel()
+    with _lock:
+        return _vision_model.describe(str(path), question or "Describe this image.", max_tokens=256)
+
+
 def harness_edit(kind: str, b64: str) -> str:
     """Entry point the extension calls. Returns a single ``__HARNESS__{json}`` line to stdout."""
     try:
@@ -212,6 +233,8 @@ def harness_edit(kind: str, b64: str) -> str:
             text = _fix(data["code"], data["instruction"])
         elif kind == "chat":
             text = _chat(data["messages"], data.get("context", ""))
+        elif kind == "vision":
+            text = _vision(data["image"], data.get("question", ""))
         else:
             raise ValueError(f"unknown action '{kind}'")
         return "__HARNESS__" + json.dumps({"text": text})

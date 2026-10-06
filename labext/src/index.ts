@@ -221,6 +221,7 @@ class ChatPanel extends Widget {
   private _messages: { role: string; content: string }[] = [];
 
   constructor(
+    private app: JupyterFrontEnd,
     private tracker: INotebookTracker,
     private rendermime: IRenderMimeRegistry
   ) {
@@ -258,17 +259,29 @@ class ChatPanel extends Widget {
     void this._append('assistant', 'Hi! I run on this notebook’s local model. Ask me to draft a tool or some code — I’ll show it with buttons to **Insert**, **Insert & run**, or **Replace** your selection. Highlight code first and I’ll know what “this” means.');
   }
 
-  /** Show generated code with action pills instead of auto-inserting it. */
+  /** If the active main-area document is an image, return its path — else null. */
+  private _currentImagePath(): string | null {
+    const current: any = (this.app.shell as any).currentWidget;
+    const path = current?.context?.path;
+    if (typeof path === 'string' && /\.(png|jpe?g|gif|webp|bmp)$/i.test(path)) {
+      return path;
+    }
+    return null;
+  }
+
+  /** Offer generated code as action pills — the code goes into a CELL, never shown in the chat. */
   private async _offerCode(
     panel: NotebookPanel,
     code: string,
     sel: { cell: Cell; from: number; to: number } | null
   ): Promise<void> {
+    const lines = code.split('\n').length;
     const bubble = document.createElement('div');
     bubble.className = 'harness-msg harness-assistant';
-    const r = this.rendermime.createRenderer('text/markdown');
-    await r.renderModel(this.rendermime.createModel({ data: { 'text/markdown': '```python\n' + code + '\n```' }, trusted: true }));
-    bubble.appendChild(r.node);
+    const note = document.createElement('div');
+    note.className = 'harness-codenote';
+    note.textContent = `📝 Drafted code (${lines} line${lines > 1 ? 's' : ''}) — add it to the notebook:`;
+    bubble.appendChild(note);
 
     const pills = document.createElement('div');
     pills.className = 'harness-pills';
@@ -321,6 +334,32 @@ class ChatPanel extends Widget {
     this._input.value = '';
 
     const panel = this.tracker.currentWidget;
+
+    // If an image document is the active tab, chat ABOUT the image (vision model).
+    const imagePath = this._currentImagePath();
+    if (imagePath) {
+      this._messages.push({ role: 'user', content: text });
+      await this._append('user', text + `\n\n🖼 about ${imagePath}`);
+      if (!panel) {
+        await this._append('assistant', 'Open a notebook too, so I have a kernel to run the vision model.');
+        return;
+      }
+      this._send.disabled = true;
+      const pending = await this._append('assistant', 'looking at the image…');
+      try {
+        const answer = await kernelEdit(panel, 'vision', { image: imagePath, question: text });
+        pending.remove();
+        this._messages.push({ role: 'assistant', content: answer });
+        await this._append('assistant', answer);
+      } catch (e: any) {
+        pending.remove();
+        await this._append('assistant', 'Error: ' + e.message);
+      } finally {
+        this._send.disabled = false;
+      }
+      return;
+    }
+
     if (!panel) {
       this._messages.push({ role: 'user', content: text });
       await this._append('user', text);
@@ -383,7 +422,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
     const current = (): NotebookPanel | null => tracker.currentWidget;
 
     // ---- Chat side panel --------------------------------------------------
-    const chat = new ChatPanel(tracker, rendermime);
+    const chat = new ChatPanel(app, tracker, rendermime);
     app.shell.add(chat, 'right', { rank: 900 });
     app.commands.addCommand(CMD.chat, {
       label: 'Harness: Open Chat',

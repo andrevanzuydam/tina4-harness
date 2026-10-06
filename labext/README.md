@@ -15,9 +15,11 @@ thing is the model weights.
   selected) and offers **Replace / Insert below / Cancel**.
 
 **Right sidebar (💬):**
-- **Chat** for ideation. It is *notebook-aware*: code it writes is inserted & run as **new cells**
-  (not dumped in the chat), it writes `@tool` functions for the harness, and it reads your current
-  **selection** as context (“fix *this*”).
+- **Chat** for ideation. It is *notebook-aware*: code it drafts is offered as **Insert / Insert &
+  run / Replace** pills and goes into **cells** (never shown in the chat), it writes `@tool`
+  functions for the harness, and it reads your current **selection** as context (“fix *this*”).
+- **Chat to an image** — when an image document is the active tab, your question is answered by the
+  **vision** model (via `harness.lab`'s `vision` action → `harness.vision.VisionModel`).
 
 **Clean demos:** a notebook with metadata `{"harness": {"autostart": true}}` runs its cells tagged
 `startup` automatically on open — so setup can be hidden and the surface starts ready
