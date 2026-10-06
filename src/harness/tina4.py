@@ -35,6 +35,7 @@ Return ONE src/routes/*.py file's content unless asked otherwise. Do not invent 
 
 _server: subprocess.Popen | None = None
 _server_url: str | None = None
+_server_project: Path | None = None
 
 
 def _client() -> str:
@@ -110,10 +111,61 @@ def find_project(start: str | Path | None = None) -> Path | None:
     return None
 
 
+def projects_in(area: str | Path) -> dict[str, Path]:
+    """Map {name: path} of Tina4 projects directly under ``area`` (e.g. the notebook folder)."""
+    found: dict[str, Path] = {}
+    try:
+        for child in Path(area).iterdir():
+            if child.is_dir() and is_project(child):
+                found[child.name] = child.resolve()
+    except Exception:
+        pass
+    return found
+
+
+def add_route(project: str | Path, name: str, code: str) -> str:
+    """Write a route file to <project>/src/routes/<name>.py. Returns its project-relative path."""
+    project = Path(project)
+    routes = project / "src" / "routes"
+    routes.mkdir(parents=True, exist_ok=True)
+    f = routes / f"{_slug(name)}.py"
+    f.write_text(code.rstrip() + "\n", encoding="utf-8")
+    return str(f.relative_to(project))
+
+
+def add_template(project: str | Path, name: str, html: str) -> str:
+    """Write a template to <project>/src/templates/<name>.twig. Returns its project-relative path."""
+    project = Path(project)
+    tpl = project / "src" / "templates"
+    tpl.mkdir(parents=True, exist_ok=True)
+    f = tpl / f"{_slug(name)}.twig"
+    f.write_text(html.rstrip() + "\n", encoding="utf-8")
+    return str(f.relative_to(project))
+
+
+def write_file(project: str | Path, rel_path: str, content: str) -> str:
+    """Write any file inside a project (relative path). Returns the project-relative path."""
+    project = Path(project)
+    f = (project / rel_path).resolve()
+    if project.resolve() not in f.parents:
+        raise ValueError(f"{rel_path} is outside the project")
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(content.rstrip() + "\n", encoding="utf-8")
+    return str(f.relative_to(project))
+
+
+def _slug(name: str) -> str:
+    import re as _re
+
+    s = _re.sub(r"[^a-zA-Z0-9_]+", "_", name.strip().lower()).strip("_")
+    return s or "index"
+
+
 def serve(cwd: str | Path, port: int = 7146, wait: bool = True) -> str:
     """Start `tina4 serve` in the BACKGROUND (so a cell never blocks). Returns the app URL."""
-    global _server, _server_url
+    global _server, _server_url, _server_project
     stop()
+    _server_project = Path(cwd).resolve()
     log = Path(cwd) / "logs" / "harness-serve.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
@@ -139,6 +191,34 @@ def _wait_up(url: str, timeout: int = 30) -> bool:
         except Exception:
             time.sleep(1)
     return False
+
+
+def served_project() -> Path | None:
+    """The project the harness currently serves (if any) — a strong 'what am I working on' signal."""
+    if _server is not None and _server.poll() is None:
+        return _server_project
+    return None
+
+
+def project_for_port(port: int) -> Path | None:
+    """Best-effort: which Tina4 project is being served on ``port`` (by inspecting the serve process
+    whose command names that port, then its working directory)."""
+    if _server is not None and _server.poll() is None and _server_url and f":{port}" in _server_url:
+        return _server_project
+    # Fall back to scanning for a `tina4 serve --port <port>` process and reading its cwd.
+    try:
+        out = subprocess.run(["pgrep", "-f", f"tina4 serve.*{port}"], capture_output=True, text=True, timeout=5)
+        for pid in out.stdout.split():
+            cwd = subprocess.run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            for line in cwd.splitlines():
+                if line.startswith("n"):
+                    p = Path(line[1:])
+                    if is_project(p):
+                        return p.resolve()
+    except Exception:
+        pass
+    return None
 
 
 def status() -> str:

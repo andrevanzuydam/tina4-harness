@@ -511,14 +511,24 @@ def _with_referenced(open_files: str) -> str:
     return open_files
 
 
-def _detect_tina4(open_files: str):
-    """Automatically tell whether we're working inside a Tina4 project — from the paths of the OPEN
-    files (and the kernel's cwd). Returns the project Path, or None. No toggle: it just knows."""
+def _detect_tina4(open_files: str, last_user: str = "", preview_urls: list | None = None):
+    """Automatically tell which Tina4 project we're working in. Priority: a project NAMED in the
+    message, else the project of an OPEN file, else the project served by an open App Preview.
+    Returns the project Path or None. No toggle — it just knows."""
     try:
         from . import tina4
     except Exception:
         return None
     from pathlib import Path
+
+    # 1) A Tina4 project named in the message, found in the notebook area (cwd and its parent).
+    if last_user:
+        projects = {}
+        for area in (Path.cwd(), Path.cwd().parent):
+            projects.update(tina4.projects_in(area))
+        for pname, ppath in projects.items():
+            if re.search(r"\b" + re.escape(pname) + r"\b", last_user, re.I):
+                return ppath
 
     def _walk_up(start: Path):
         """Nearest enclosing Tina4 project, stopping at the first repo (.git) boundary so one
@@ -534,7 +544,7 @@ def _detect_tina4(open_files: str):
             d = d.parent
         return None
 
-    # tina4 mode comes ONLY from the file you're working on being inside a Tina4 project.
+    # 2) The file you're working on being inside a Tina4 project.
     for rel in re.findall(r"# ===== (.+?) =====", open_files or ""):
         rel = rel.split("  (")[0].strip()  # drop a "(referenced…)" suffix
         p = Path(rel)
@@ -542,13 +552,95 @@ def _detect_tina4(open_files: str):
         proj = _walk_up(cand.parent if cand.suffix else cand)
         if proj is not None:
             return proj
+
+    # 3) The project served by an open App Preview tab (the thing you're looking at).
+    for url in preview_urls or []:
+        m = re.search(r":(\d+)", url or "")
+        if m:
+            proj = tina4.project_for_port(int(m.group(1)))
+            if proj is not None:
+                return proj
     return None
 
 
+_WROTE_SENTINEL = "@@HARNESS_WROTE@@"  # tells the extension: files written, show + refresh preview
+
+
+def _is_tina4_file_request(text: str) -> bool:
+    """A request to add a real file to the Tina4 project (route/page/endpoint), not a notebook cell."""
+    if re.search(r"\b(in|into|as|to)\s+a?\s*(new\s+)?cell\b", text, re.I):
+        return False
+    return bool(
+        re.search(r"\b(add|create|make|new|build|scaffold|generate)\b", text, re.I)
+        and re.search(r"\b(route|page|endpoint|api|view|template|home ?page|handler)\b", text, re.I)
+    )
+
+
+def _tina4_target(text: str):
+    """Work out (name, url_path, is_page) for a route from the request."""
+    mpath = re.search(r"(/[A-Za-z0-9_\-/]*)", text)
+    url = mpath.group(1) if mpath else None
+    is_page = bool(re.search(r"\bpage|home ?page|view|html|template\b", text, re.I)) and \
+        not re.search(r"\b(json|api|endpoint)\b", text, re.I)
+    _STOP = {"a", "an", "the", "new", "another", "some", "simple", "basic"}
+    name = None
+    if re.search(r"\bhome ?page\b", text, re.I):
+        name, url = "home", url or "/"
+    else:
+        mname = re.search(r"\b([a-z][a-z0-9_]*)\s+(?:page|route|endpoint|view|handler|api)\b", text, re.I)
+        if mname and mname.group(1).lower() not in _STOP:
+            name = mname.group(1).lower()
+    if name is None and url:  # fall back to the URL's last segment
+        name = url.strip("/").split("/")[-1] or "index"
+    if name is None:
+        name = "index"
+    if url is None:
+        url = "/" if name in ("home", "index") else "/" + name
+    return name, url, is_page
+
+
+def _tina4_write(project, text: str, messages: list) -> str:
+    """Generate a Tina4 route (and a template for a page) and WRITE it into the project."""
+    from . import tina4
+
+    name, url, is_page = _tina4_target(text)
+    _status(f"🛠 writing src/routes/{name}.py in {project.name}…")
+    written = []
+    if is_page:
+        tpl_sys = (tina4.PARADIGMS + "\n\nWrite ONLY a small, self-contained HTML Twig template "
+                   f"(src/templates/{name}.twig) for this page. Use plain HTML; you may use {{ var }} "
+                   "placeholders. No <script> to external CDNs (CSP is default-src 'self').")
+        tpl = _code(_generate([{"role": "system", "content": tpl_sys},
+                               {"role": "user", "content": f"Page: {text}"}], 900))
+        written.append(tina4.add_template(project, name, tpl))
+        route_sys = (tina4.PARADIGMS + f"\n\nWrite ONLY the Python for src/routes/{name}.py: a @get "
+                     f"route for path '{url}' whose async handler renders the template '{name}.twig' "
+                     "with response(template(...)). Import get and template from tina4_python.core.router.")
+    else:
+        route_sys = (tina4.PARADIGMS + f"\n\nWrite ONLY the Python for src/routes/{name}.py: a route "
+                     f"for path '{url}' that returns JSON via response({{...}}). Import the verb from "
+                     "tina4_python.core.router. Match the user's request exactly.")
+    route = _code(_generate([{"role": "system", "content": route_sys},
+                             {"role": "user", "content": text}], 900))
+    written.insert(0, tina4.add_route(project, name, route))
+    files = ", ".join(f"`{w}`" for w in written)
+    note = (f"Wrote {files} in **{project.name}** — route `{url}`. "
+            "Hot-reload will pick it up; the App Preview refreshes automatically.")
+    return f"{_WROTE_SENTINEL}|{project}|{url}\n{note}\n\n```python\n{route.strip()}\n```"
+
+
 def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "",
-          intent: str = "code", open_files: str = "") -> str:
+          intent: str = "code", open_files: str = "", preview_urls: list | None = None) -> str:
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
-    tina4_project = _detect_tina4(open_files)
+    tina4_project = _detect_tina4(open_files, last_user, preview_urls or [])
+
+    # In a Tina4 project + a "add a route/page" request → WRITE the file(s) into the project
+    # (not a notebook cell). The extension shows the code and refreshes the open App Preview.
+    if tina4_project is not None and _is_tina4_file_request(last_user):
+        try:
+            return _tina4_write(tina4_project, last_user, messages)
+        except Exception as exc:
+            return f"Could not write the Tina4 files: {exc}"
 
     # An open file may import/reference LOCAL modules that aren't open — pull those in too, so the
     # answer can follow the code's own dependencies.
@@ -829,6 +921,7 @@ def harness_edit(kind: str, b64: str) -> str:
             text = _chat(
                 data["messages"], data.get("context", ""), data.get("notebook", ""),
                 data.get("output", ""), data.get("intent", "code"), data.get("open_files", ""),
+                data.get("preview_urls", []),
             )
         elif kind == "vision":
             text = _vision(data["image"], data.get("question", ""))

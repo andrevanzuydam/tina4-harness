@@ -290,6 +290,44 @@ function openAppPreview(app: JupyterFrontEnd, url: string): void {
   app.shell.activateById(w.id);
 }
 
+/** Reload every open App Preview iframe (after the harness writes to the project). */
+function reloadPreviews(app: JupyterFrontEnd): number {
+  let n = 0;
+  try {
+    for (const w of (app.shell as any).widgets('main')) {
+      if (w.id && String(w.id).startsWith('harness-preview-')) {
+        const iframe = w.node.querySelector('iframe') as HTMLIFrameElement | null;
+        if (iframe) {
+          // eslint-disable-next-line no-self-assign
+          iframe.src = iframe.src; // force a reload
+          n++;
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return n;
+}
+
+/** URLs of open App Preview tabs — a signal for which project is being worked on. */
+function openPreviewUrls(app: JupyterFrontEnd): string[] {
+  const urls: string[] = [];
+  try {
+    for (const w of (app.shell as any).widgets('main')) {
+      if (w.id && String(w.id).startsWith('harness-preview-')) {
+        const iframe = w.node.querySelector('iframe') as HTMLIFrameElement | null;
+        if (iframe && iframe.src) {
+          urls.push(iframe.src);
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return urls;
+}
+
 function insertBelowWithSource(panel: NotebookPanel, source: string): Cell {
   NotebookActions.insertBelow(panel.content);
   const cell = panel.content.activeCell!;
@@ -444,6 +482,8 @@ function stripFences(code: string): string {
 /** Split a Markdown reply into prose and its fenced code blocks (code has no fences). */
 // Reply prefix (from harness.lab) that means: insert the code block straight into a new cell.
 const INSERT_SENTINEL = '@@HARNESS_INSERT@@\n';
+// Reply prefix meaning: files were written to a Tina4 project — show read-only + refresh preview.
+const WROTE_SENTINEL = '@@HARNESS_WROTE@@';
 
 /** Drop prose that is only a heading/label with no real content (e.g. "Explanation of the fix:",
  *  "Output:") — those render as big blank headers next to a code cell and say nothing. */
@@ -1128,6 +1168,7 @@ class ChatPanel extends Widget {
           context,
           notebook: this._notebookCode(panel),
           open_files: this._openFiles(panel),
+          preview_urls: openPreviewUrls(this.app),
           output,
           intent: mode === 'ask' ? 'ask' : 'code'
         },
@@ -1145,6 +1186,19 @@ class ChatPanel extends Widget {
       );
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
+      // A Tina4 file write: show the code (read-only), DON'T touch the notebook, refresh the preview.
+      if (reply.startsWith(WROTE_SENTINEL)) {
+        const nl = reply.indexOf('\n');
+        const body = nl >= 0 ? reply.slice(nl + 1) : reply;
+        await this._append('assistant', body); // note + ```python``` rendered read-only
+        const n = reloadPreviews(this.app);
+        if (n > 0) {
+          await this._append('assistant', `↻ Refreshed ${n} App Preview tab${n > 1 ? 's' : ''}.`);
+        }
+        this._save();
+        this._send.disabled = false;
+        return;
+      }
       // A "load <file>" request: drop the file straight into a new cell — no pills, any mode.
       if (reply.startsWith(INSERT_SENTINEL)) {
         const { prose, blocks } = splitCode(reply.slice(INSERT_SENTINEL.length));
