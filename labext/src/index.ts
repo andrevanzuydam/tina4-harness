@@ -453,47 +453,79 @@ class ChatPanel extends Widget {
     code: string,
     sel: { cell: Cell; from: number; to: number } | null
   ): Promise<void> {
-    const { cell, created } = placeCode(panel, code);
-    await runCell(panel, cell);
+    const placed = placeCode(panel, code);
+    await runCell(panel, placed.cell);
+
+    // Track the live cell so Undo/Redo can toggle it.
+    let cur: Cell | null = placed.cell;
+    let wasCreated = placed.created;
+    const removeCode = (): void => {
+      if (!cur) {
+        return;
+      }
+      if (wasCreated) {
+        deleteCellWidget(panel, cur);
+      } else {
+        cur.model.sharedModel.setSource('');
+      }
+      cur = null;
+    };
 
     const bubble = document.createElement('div');
     bubble.className = 'harness-msg harness-assistant';
     const note = document.createElement('div');
     note.className = 'harness-codenote';
-    note.textContent = created ? '✓ Added a cell and ran it.' : '✓ Filled the blank cell and ran it.';
+    note.textContent = placed.created ? '✓ Added a cell and ran it.' : '✓ Filled the blank cell and ran it.';
     bubble.appendChild(note);
 
     const pills = document.createElement('div');
     pills.className = 'harness-pills';
-    const undo = (): void => (created ? deleteCellWidget(panel, cell) : cell.model.sharedModel.setSource(''));
-    const addPill = (label: string, action: () => Promise<void> | void): void => {
+    const mkPill = (label: string, onClick: (b: HTMLButtonElement) => Promise<void> | void): HTMLButtonElement => {
       const b = document.createElement('button');
       b.className = 'harness-pill';
       b.textContent = label;
-      b.onclick = async () => {
-        pills.querySelectorAll('button').forEach(x => ((x as HTMLButtonElement).disabled = true));
-        await action();
-        const done = document.createElement('span');
-        done.className = 'harness-pill-done';
-        done.textContent = '✓ ' + label;
-        pills.appendChild(done);
-        this._log.scrollTop = this._log.scrollHeight;
-      };
+      b.onclick = () => void onClick(b);
       pills.appendChild(b);
+      return b;
     };
 
-    addPill('Copy', () => void navigator.clipboard.writeText(code));
-    addPill('New notebook', async () => {
-      undo();
-      await newNotebookWithCode(this.app, code);
+    // Undo ⇄ Redo toggle (never disabled).
+    const toggle = mkPill('Undo', async b => {
+      if (cur) {
+        removeCode();
+        b.textContent = 'Redo';
+      } else {
+        const r = placeCode(panel, code);
+        cur = r.cell;
+        wasCreated = r.created;
+        await runCell(panel, cur);
+        b.textContent = 'Undo';
+      }
     });
-    addPill('Undo', () => undo());
+
+    mkPill('Copy', b => {
+      void navigator.clipboard.writeText(code);
+      const prev = b.textContent;
+      b.textContent = 'Copied';
+      setTimeout(() => (b.textContent = prev), 1000);
+    });
+
+    mkPill('New notebook', async b => {
+      removeCode();
+      toggle.textContent = 'Redo';
+      await newNotebookWithCode(this.app, code);
+      b.disabled = true;
+    });
+
     if (sel) {
-      addPill('Put in selection instead', () => {
-        undo();
+      mkPill('Put in selection', b => {
+        removeCode();
+        toggle.textContent = 'Redo';
         sel.cell.model.sharedModel.updateSource(sel.from, sel.to, code);
+        b.disabled = true;
       });
     }
+
     bubble.appendChild(pills);
     this._log.appendChild(bubble);
     this._log.scrollTop = this._log.scrollHeight;
