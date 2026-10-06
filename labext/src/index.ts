@@ -712,8 +712,9 @@ class ChatPanel extends Widget {
       cell = r.cell;
       mode = r.created ? 'created' : 'filled';
     }
-    // Don't auto-run code that reads stdin — it would hang the cell waiting for input().
-    const readsInput = /(^|[^.\w])input\s*\(/.test(code);
+    // Don't auto-run code that would block on input() AT TOP LEVEL (module scope). input() inside a
+    // function body is fine — running the cell just defines the function, so we DO run it.
+    const readsInput = code.split('\n').some(l => /\binput\s*\(/.test(l) && !/^\s/.test(l) && !l.trimStart().startsWith('#'));
     if (!readsInput) {
       await runCell(panel, cell);
     }
@@ -743,12 +744,11 @@ class ChatPanel extends Widget {
     bubble.className = 'harness-msg harness-assistant';
     const note = document.createElement('div');
     note.className = 'harness-codenote';
-    const ran = readsInput ? ' (not run — it reads input())' : ' and ran it.';
-    const tail = readsInput ? '.' : '';
+    const ran = readsInput ? ' — run it yourself and type your answer in the prompt.' : ' and ran it.';
     note.textContent =
-      mode === 'replaced' ? `✓ Updated the existing cell${ran}${tail}`
-      : mode === 'created' ? `✓ Added a cell${ran}${tail}`
-      : `✓ Filled the blank cell${ran}${tail}`;
+      mode === 'replaced' ? `✓ Updated the existing cell${ran}`
+      : mode === 'created' ? `✓ Added a cell${ran}`
+      : `✓ Filled the blank cell${ran}`;
     bubble.appendChild(note);
 
     const pills = document.createElement('div');

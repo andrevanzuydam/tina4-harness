@@ -272,6 +272,38 @@ def referenced_files(code: str, limit: int = 6, max_chars: int = 2500) -> dict[s
     return found
 
 
+def find_definitions(names, max_chars: int = 1400, limit: int = 4) -> dict:
+    """Locate where functions/classes are defined across the notebook space and open repo — for ANY
+    name in ANY file. Returns {name: (relpath, snippet)}. Lets the model call a method it can't see
+    because the file isn't open, without guessing its signature."""
+    wanted = [n for n in dict.fromkeys(names) if n and n.isidentifier()]
+    if not wanted:
+        return {}
+    pats = {
+        n: re.compile(r"^[ \t]*(?:async[ \t]+)?(?:def|class)[ \t]+" + re.escape(n) + r"\b", re.M)
+        for n in wanted
+    }
+    found: dict = {}
+    for f in _candidate_files():
+        if len(found) >= limit or len(found) == len(wanted):
+            break
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for n, pat in pats.items():
+            if n in found:
+                continue
+            m = pat.search(text)
+            if m:
+                try:
+                    key = str(f.resolve().relative_to(Path.cwd().resolve()))
+                except Exception:
+                    key = f.name
+                found[n] = (key, text[m.start():m.start() + max_chars])
+    return found
+
+
 def load_file(hint: str) -> tuple[str, str, str]:
     """Load a file to drop into a cell. Returns (display_name, language, source).
     Raises FileNotFoundError if nothing matches."""

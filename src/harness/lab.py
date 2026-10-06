@@ -387,6 +387,13 @@ def _strip_redefs_in_reply(reply: str, existing: set) -> str:
 
 _GIT_URL = re.compile(r"(git@[\w.-]+:[\w./-]+?\.git|https?://[\w.-]+/[\w./-]+?(?:\.git)?)(?=\s|$)")
 
+# Words in a "call X" message that are NOT the method name, so we don't look them up as definitions.
+_CALL_STOPWORDS = {
+    "call", "invoke", "run", "execute", "the", "function", "method", "func", "def", "please",
+    "and", "with", "for", "use", "using", "that", "this", "it", "cell", "notebook", "print",
+    "show", "result", "output", "example", "code", "file", "from", "into", "new", "make",
+}
+
 # File extensions a "load this file" request may name (kept in sync with repo.CODE_EXT spirit).
 _FILE_EXT = (r"py|js|ts|tsx|jsx|java|go|rs|rb|php|c|cc|cpp|h|hpp|cs|swift|kt|scala|"
              r"md|rst|txt|json|ya?ml|toml|cfg|ini|sh|sql|html?|css")
@@ -568,6 +575,34 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             "\n\nThis is a QUESTION, not a build request. EXPLAIN clearly in a few sentences; show at "
             "most a tiny corrected snippet inline. Do NOT output a full program or a cell to run."
         )
+    # "call / invoke / run the function" → just CALL an already-defined function, don't define a new one.
+    if intent != "ask" and re.search(r"\b(call|invoke|run)\b", last_user, re.I):
+        system_text += (
+            "\n\nThe user wants to CALL a function that is ALREADY defined (in the notebook or an open "
+            "file) — do NOT define a new function, and do NOT invent one named 'call'. Write just ONE "
+            "or two lines that invoke the EXISTING function by its real name with a sensible example "
+            "argument and print the result. For example, if the defined function were "
+            "`def area(w, h): ...`, you would write `print(area(3, 4))`. Use the function's REAL name "
+            "and arguments that match its parameters."
+        )
+        # Ground the model in the REAL definition of whatever method the user named — any name, any
+        # file — so it calls it with the correct signature instead of guessing.
+        seen_here = (notebook_code or "") + "\n" + (open_files or "")
+        names = [t for t in re.findall(r"[A-Za-z_]\w{2,}", last_user)
+                 if t.lower() not in _CALL_STOPWORDS and ("def " + t) not in seen_here
+                 and ("class " + t) not in seen_here]
+        if names:
+            try:
+                from . import repo as _repo
+
+                _repo.ensure_indexed()
+                defs = _repo.find_definitions(names)
+                if defs:
+                    blocks = "\n\n".join(f"# {path}\n{snip}" for _n, (path, snip) in defs.items())
+                    system_text += ("\n\nThese are the ACTUAL definitions to call (from the project) — "
+                                    "use the real name and parameters:\n```python\n" + blocks + "\n```")
+            except Exception:
+                pass
     if output:
         system_text += (
             "\n\nThe active cell's latest OUTPUT / ERROR is below. If it is an error, use it to find "
