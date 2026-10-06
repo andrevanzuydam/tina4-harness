@@ -395,6 +395,9 @@ function stripFences(code: string): string {
 }
 
 /** Split a Markdown reply into prose and its fenced code blocks (code has no fences). */
+// Reply prefix (from harness.lab) that means: insert the code block straight into a new cell.
+const INSERT_SENTINEL = '@@HARNESS_INSERT@@\n';
+
 function splitCode(md: string): { prose: string; blocks: string[] } {
   const blocks: string[] = [];
   const prose = md
@@ -531,6 +534,66 @@ class ChatPanel extends Widget {
     }
     const code = out.join('\n\n');
     return code.length > 4000 ? code.slice(-4000) : code;
+  }
+
+  /** Content of EVERY file the user has OPEN in a main-area tab (file editors + other notebooks),
+   *  so questions are aware of everything on screen — not just the active notebook's cells.
+   *  Multiple open files all get included, each given a fair share of the budget. */
+  private _openFiles(activePanel: NotebookPanel | null): string {
+    const docs: { name: string; body: string }[] = [];
+    const seen = new Set<string>();
+    const push = (name: string, text: string): void => {
+      const body = (text || '').trim();
+      if (body && !seen.has(name)) {
+        seen.add(name);
+        docs.push({ name, body });
+      }
+    };
+    let it: IterableIterator<any> | any[];
+    try {
+      it = (this.app.shell as any).widgets('main');
+    } catch {
+      it = [];
+    }
+    for (const w of it as any) {
+      try {
+        const name: string = w.title?.label || w.context?.path || w.id || 'untitled';
+        // A plain file editor (FileEditor): text lives on its editor/model shared model.
+        const ed = w.content?.editor || w.content;
+        const fem = ed?.model?.sharedModel || w.content?.model?.sharedModel;
+        if (fem && typeof fem.getSource === 'function' && !w.content?.widgets) {
+          push(name, fem.getSource());
+          continue;
+        }
+        // A notebook widget: concatenate its code cells (skip the active one — sent separately).
+        if (w.content?.widgets && w !== activePanel) {
+          const cells: string[] = [];
+          for (const c of w.content.widgets) {
+            if (c.model?.type === 'code') {
+              const s = c.model.sharedModel.getSource().trim();
+              if (s) {
+                cells.push(s);
+              }
+            }
+          }
+          push(name, cells.join('\n\n'));
+        }
+      } catch {
+        /* skip a widget we can't read */
+      }
+    }
+    if (!docs.length) {
+      return '';
+    }
+    // Fair share so one big file never crowds the others out (total ~12000 chars).
+    const TOTAL = 12000;
+    const per = Math.max(1200, Math.floor(TOTAL / docs.length));
+    const header = `(${docs.length} file(s) open: ${docs.map(d => d.name).join(', ')})`;
+    const parts = docs.map(d => {
+      const body = d.body.length > per ? d.body.slice(0, per) + '\n# …(truncated)…' : d.body;
+      return `# ===== ${d.name} =====\n${body}`;
+    });
+    return header + '\n\n' + parts.join('\n\n');
   }
 
   private async _loadHistory(panel: NotebookPanel, key: string): Promise<{ role: string; content: string }[]> {
@@ -923,6 +986,7 @@ class ChatPanel extends Widget {
           messages: this._messages,
           context,
           notebook: this._notebookCode(panel),
+          open_files: this._openFiles(panel),
           output,
           intent: mode === 'ask' ? 'ask' : 'code'
         },
@@ -940,6 +1004,18 @@ class ChatPanel extends Widget {
       );
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
+      // A "load <file>" request: drop the file straight into a new cell — no pills, any mode.
+      if (reply.startsWith(INSERT_SENTINEL)) {
+        const { prose, blocks } = splitCode(reply.slice(INSERT_SENTINEL.length));
+        for (const code of blocks) {
+          const cell = insertBelowWithSource(panel, code);
+          panel.content.activeCellIndex = panel.content.widgets.indexOf(cell);
+        }
+        await this._append('assistant', prose || 'Loaded into a cell.');
+        this._save();
+        this._send.disabled = false;
+        return;
+      }
       if (mode === 'ask') {
         // A question: show the explanation in the chat, insert nothing.
         await this._append('assistant', reply || '(no reply)');

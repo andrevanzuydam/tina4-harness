@@ -189,9 +189,12 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-def find_file(hint: str) -> Path | None:
+def find_file(hint: str, exact: bool = False) -> Path | None:
     """Resolve a user's file reference (path, name, or bare stem) to a real file in the
-    notebook folder or the open repo. Case/separator-insensitive; prefers an exact match."""
+    notebook folder or the open repo. Case/separator-insensitive; prefers an exact match.
+
+    With ``exact=True`` only a direct path or an exact name/stem match counts (no partial
+    substring match) — use it when the reference is a bare word that might be ordinary prose."""
     hint = (hint or "").strip().strip("`'\"")
     if not hint:
         return None
@@ -206,14 +209,67 @@ def find_file(hint: str) -> Path | None:
     # 2) Match by file name or stem across all candidate files.
     want = _norm(hint)
     want_stem = _norm(Path(hint).stem)
-    exact, partial = None, None
+    partial = None
     for f in _candidate_files():
         name, stem = _norm(f.name), _norm(f.stem)
         if want in (name, stem) or want_stem in (name, stem):
             return f  # exact name/stem match wins immediately
-        if (want and want in name) or (want_stem and want_stem in stem):
+        if not exact and ((want and want in name) or (want_stem and want_stem in stem)):
             partial = partial or f
-    return exact or partial
+    return partial
+
+
+# Line-bounded so a bare `import x` never swallows following lines (\s would include newlines).
+_IMPORT_RE = re.compile(r"^[ \t]*(?:from[ \t]+([.\w]+)[ \t]+import\b|import[ \t]+([\w.,\t ]+))", re.M)
+
+
+def _resolve_module(dotted: str) -> Path | None:
+    """Resolve a (possibly dotted) module name to a local file: 'models.user' → models/user.py or
+    models/user/__init__.py. Falls back to a unique file whose stem matches the last component."""
+    rel = dotted.strip().lstrip(".").replace(".", "/")
+    if not rel:
+        return None
+    for root in search_roots():
+        for suffix in (rel + ".py", rel + "/__init__.py"):
+            p = root / suffix
+            if p.is_file():
+                return p
+    return find_file(rel.split("/")[-1] + ".py", exact=True)
+
+
+def referenced_files(code: str, limit: int = 6, max_chars: int = 2500) -> dict[str, str]:
+    """Follow the imports in some code and return {relative_path: source} for each LOCAL module it
+    references (a real file in the notebook folder or the open repo). Resolves dotted paths and
+    relative imports. Lets the chat see code that an open file depends on even when that file isn't
+    open. Stdlib/third-party imports resolve to no local file and are simply skipped."""
+    names: list[str] = []
+    for m in _IMPORT_RE.finditer(code or ""):
+        if m.group(1):  # from <X.Y> import ...
+            names.append(m.group(1).strip())
+        else:           # import a, b.c as d
+            for part in m.group(2).split(","):
+                nm = part.strip().split(" as ")[0].strip()
+                if nm:
+                    names.append(nm)
+    found: dict[str, str] = {}
+    for name in names:
+        if len(found) >= limit:
+            break
+        f = _resolve_module(name)
+        if f is None:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        try:
+            key = str(f.resolve().relative_to(Path.cwd().resolve()))
+        except Exception:
+            key = f.name
+        if key in found:
+            continue
+        found[key] = text[:max_chars] + ("\n# …(truncated)…" if len(text) > max_chars else "")
+    return found
 
 
 def load_file(hint: str) -> tuple[str, str, str]:
@@ -248,11 +304,14 @@ def explain_file(rel_path: str, model=None, max_tokens: int = 700) -> str:
     return _strip_think(model.generate(messages, max_tokens=max_tokens))
 
 
-def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400, history=None) -> str:
+def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400, history=None,
+             open_code: str = "") -> str:
     """Answer a question about the cloned codebase, grounded in the retrieved code.
 
     ``history`` (the chat so far) keeps follow-ups in context: a terse "explain its ties logic"
-    still retrieves the right file, and the model sees what was already discussed."""
+    still retrieves the right file, and the model sees what was already discussed.
+    ``open_code`` is whatever is currently open in the notebook's cells — when the user has a file
+    loaded, "this"/"the file"/"it" mean THAT, so it is put first in the context."""
     if _index is None:
         raise RuntimeError("Call open_repo(url) or index(path) first.")
     # Structure/overview questions: list EVERY top-level folder deterministically (nothing dropped),
@@ -265,6 +324,10 @@ def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400, histo
     query = (recent_user + " " + question).strip() if recent_user else question
     chunks = _index.retrieve(query, k=k)
     context = "\n\n".join(text for _cid, text, _s in chunks)
+    if open_code.strip():
+        context = ("Currently OPEN in the notebook — the user likely means THIS when they say "
+                   "'this', 'the file', or 'it':\n" + open_code.strip()[:4000] + "\n\n"
+                   "Other relevant code from the repository:\n" + context)
     model = model or load_model()
     system = {"role": "system", "content":
         "You answer questions about a codebase using ONLY the code excerpts provided and the "

@@ -372,6 +372,8 @@ _FILE_EXT = (r"py|js|ts|tsx|jsx|java|go|rs|rb|php|c|cc|cpp|h|hpp|cs|swift|kt|sca
              r"md|rst|txt|json|ya?ml|toml|cfg|ini|sh|sql|html?|css")
 _FILE_RE = re.compile(r"([\w./-]+\.(?:" + _FILE_EXT + r"))\b", re.I)
 _LOAD_VERB = r"load|open|read|show|view|cat|insert|paste|pull up|bring up|import"
+# Reply prefix that tells the extension to insert the code block directly into a new cell.
+_INSERT_SENTINEL = "@@HARNESS_INSERT@@\n"
 
 
 def _is_load_request(text: str) -> bool:
@@ -408,40 +410,88 @@ def _recent_file_hint(messages: list) -> str:
     return ""
 
 
-def _load_into_cell(text: str, messages: list):
-    """Resolve the named (or last-mentioned) file and return its source as a fenced block so the
-    extension inserts it into a cell. Returns None if this isn't really a load request to act on."""
+def _maybe_load(text: str, messages: list):
+    """If this is a 'load/open/show <file>' request, read the file (notebook space OR open repo)
+    and return its source tagged for direct cell insertion — NO model, NO comprehension, just the
+    file. Returns None when it isn't a load (so the caller falls through to Q&A).
+
+    Two cases:
+      • explicit   — a real filename ('open x.py') or 'load the code' → act, and if nothing is
+                     found say so rather than silently falling through.
+      • bare verb  — 'open stone_paper_scissor' → only loads if the word EXACTLY names a file,
+                     otherwise returns None so a genuine question still reaches the repo Q&A.
+    """
     from . import repo
 
-    fm = _FILE_RE.search(text)
-    hint = fm.group(1) if fm else ""
-    if not hint:
-        bm = re.search(r"\b(?:" + _LOAD_VERB + r")\s+(?:the\s+)?([A-Za-z0-9_./-]{3,})", text, re.I)
-        if bm and bm.group(1).lower() not in ("code", "file", "source", "script", "it", "this", "that"):
-            hint = bm.group(1)
-    if not hint:  # "load the code" / "load it" → resolve from the conversation
-        hint = _recent_file_hint(messages)
-    if not hint:
-        return ("Which file should I load? Name it — e.g. `load stone_paper_scissor.py` — or I can "
-                "load from a folder in your notebook, e.g. `load scripts/clean.py`.")
-    _status(f"📂 loading {hint}…")
+    explicit = _is_load_request(text)
     try:
         repo.ensure_indexed()  # make the clone's files findable even after a kernel restart
     except Exception:
         pass
+
+    fm = _FILE_RE.search(text)
+    hint = fm.group(1) if fm else ""
+    bare = False
+    if not hint:
+        bm = re.match(r"\s*(?:" + _LOAD_VERB + r")\s+(?:the\s+)?([A-Za-z0-9_./-]{2,})", text, re.I)
+        if bm and bm.group(1).lower() not in ("code", "file", "source", "script", "it", "this", "that"):
+            hint, bare = bm.group(1), True
+    if not hint and explicit:  # "load the code" / "load it" → resolve from the conversation
+        hint = _recent_file_hint(messages)
+
+    if not hint:
+        if explicit:
+            return ("Which file should I load? Name it — e.g. `load stone_paper_scissor.py` — or "
+                    "from a folder in your notebook, e.g. `load scripts/clean.py`.")
+        return None
+
+    # A bare 'open <word>' must EXACTLY name a file; otherwise it is probably a question → fall through.
+    found = repo.find_file(hint, exact=(bare and not fm))
+    if found is None:
+        if explicit:
+            return (f"I couldn't find a file matching **{hint}** in your notebook folder or the open "
+                    "repo. Check the name, or clone/open the repo first.")
+        return None
+
+    _status(f"📂 opening {found.name}…")
     try:
-        name, lang, code = repo.load_file(hint)
-    except FileNotFoundError:
-        return (f"I couldn't find a file matching **{hint}** in your notebook folder or the open repo. "
-                "Check the name, or clone/open the repo first.")
+        name, lang, code = repo.load_file(str(found))
     except Exception as exc:
-        return f"Could not load {hint}: {exc}"
-    note = f"Loaded **{name}** ({len(code.splitlines())} lines) — insert it into a cell:"
-    return f"{note}\n\n```{lang}\n{code.rstrip()}\n```"
+        return f"Could not open {hint}: {exc}"
+    # Leading sentinel → the extension drops this straight into a new cell (no pills, any mode).
+    note = f"Opened **{name}** ({len(code.splitlines())} lines) into a new cell."
+    return f"{_INSERT_SENTINEL}{note}\n\n```{lang}\n{code.rstrip()}\n```"
 
 
-def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "", intent: str = "code") -> str:
+def _with_referenced(open_files: str) -> str:
+    """Append the content of LOCAL modules the open files import but that aren't themselves open,
+    so the model can follow the code's dependencies. Best-effort; bounded in size."""
+    try:
+        from . import repo
+
+        repo.ensure_indexed()
+        already = set(re.findall(r"# ===== (.+?) =====", open_files))
+        refs = repo.referenced_files(open_files)
+        extra = []
+        for path, src in refs.items():
+            if path in already or path.split("/")[-1] in {a.split("/")[-1] for a in already}:
+                continue
+            extra.append(f"# ===== {path}  (referenced, not open) =====\n{src}")
+        if extra:
+            return open_files + "\n\n" + "\n\n".join(extra)
+    except Exception:
+        pass
+    return open_files
+
+
+def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "",
+          intent: str = "code", open_files: str = "") -> str:
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+
+    # An open file may import/reference LOCAL modules that aren't open — pull those in too, so the
+    # answer can follow the code's own dependencies.
+    if open_files.strip():
+        open_files = _with_referenced(open_files)
 
     # "clone <git url>" → actually clone + index it with the harness (not just print a command).
     if re.search(r"\b(clone|open|load|index)\b", last_user, re.I):
@@ -462,12 +512,12 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             except Exception as exc:
                 return f"Could not clone that repo: {exc}"
 
-    # "load / open / show <file>" → read the file (from a folder in the notebook space OR the open
-    # repo) and return its source so the UI drops it into a cell. No git URL needed.
-    if _is_load_request(last_user):
-        loaded = _load_into_cell(last_user, messages)
-        if loaded is not None:
-            return loaded
+    # "load / open / show <file>" → read the file (notebook space OR open repo) and return its
+    # source for direct cell insertion. No model, no comprehension — just the file. Returns None
+    # (falls through to Q&A) when the message isn't actually naming a file.
+    loaded = _maybe_load(last_user, messages)
+    if loaded is not None:
+        return loaded
 
     # If a repo is open, answer code/exploration questions FROM the repo (not the active cell).
     try:
@@ -479,7 +529,8 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             last_user, re.I,
         ) and _repo.ensure_indexed():  # re-index the on-disk clone if this kernel has none
             _status("🔎 searching the repo…")
-            return _repo.ask_repo(last_user, max_tokens=600, history=messages)  # history → keeps follow-ups in context
+            # history → keeps follow-ups in context; open_files → aware of what's open on screen.
+            return _repo.ask_repo(last_user, max_tokens=600, history=messages, open_code=open_files)
     except Exception:
         pass
 
@@ -502,6 +553,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             "\n\nThe active cell's latest OUTPUT / ERROR is below. If it is an error, use it to find "
             "the cause and FIX it. The code is already provided in this message — do NOT ask the user "
             "to share the code again; just return the corrected code:\n" + output[-1800:]
+        )
+    if open_files.strip():
+        # Files the user has OPEN in editor/notebook tabs — be aware of them when answering.
+        system_text += (
+            "\n\nThe user currently has these FILES OPEN on screen. When they ask about 'the file', "
+            "'this code', or a function/name that appears here, they mean THIS — use it to answer:\n"
+            "```python\n" + open_files.strip()[:8000] + "\n```"
         )
     if notebook_code:
         system_text += (
@@ -648,7 +706,7 @@ def harness_edit(kind: str, b64: str) -> str:
         elif kind == "chat":
             text = _chat(
                 data["messages"], data.get("context", ""), data.get("notebook", ""),
-                data.get("output", ""), data.get("intent", "code"),
+                data.get("output", ""), data.get("intent", "code"), data.get("open_files", ""),
             )
         elif kind == "vision":
             text = _vision(data["image"], data.get("question", ""))
