@@ -180,11 +180,32 @@ def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400) -> st
             tree.append(f"{d.name}/ : {', '.join(names)}")
         if tree:
             context = "Top-level folders (name : sample contents):\n" + "\n".join(tree) + "\n\n" + context
-    model = model or load_model()
+    structure = bool(re.search(r"folder|director|structure|organi|overview|each|layout", question, re.I))
+    if structure:
+        system = ("You describe a codebase using ONLY the provided folder list. Output EXACTLY one "
+                  "Markdown bullet per folder, in this format and nothing else:\n"
+                  "- **folder_name/** — one short sentence on what it contains.\n"
+                  "No heading, no table, no sub-bullets, no duplicates, no intro or outro.")
+    else:
+        system = ("You answer questions about a codebase using ONLY the code excerpts provided. Be "
+                  "specific and name the file/function. Answer in at most 5 sentences; if it is not "
+                  "in the excerpts, say so. No headings.")
     messages = [
-        {"role": "system", "content":
-            "You answer questions about a codebase using ONLY the code excerpts provided. Be "
-            "specific and name the file/function when you can. If it is not in the excerpts, say so."},
+        {"role": "system", "content": system},
         {"role": "user", "content": f"Code from the repository:\n{context[:5000]}\n\nQuestion: {question}"},
     ]
-    return _strip_think(model.generate(messages, max_tokens=max_tokens))
+    out = _strip_think(model.generate(messages, max_tokens=max_tokens))
+    if structure:  # keep one bullet per unique folder, drop anything that isn't a bullet
+        seen, lines = set(), []
+        for ln in out.splitlines():
+            m = re.match(r"\s*[-*]\s*\*\*(.+?)/\*\*", ln)
+            if not m:
+                continue
+            key = m.group(1).strip().lower().replace("-", "_").replace(" ", "_")
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(ln.strip())
+        if lines:
+            out = "\n".join(lines)
+    return out
