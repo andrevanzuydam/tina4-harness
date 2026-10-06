@@ -150,6 +150,18 @@ def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400) -> st
         raise RuntimeError("Call open_repo(url) or index(path) first.")
     chunks = _index.retrieve(question, k=k)
     context = "\n\n".join(text for _cid, text, _s in chunks)
+    # Structure/folder questions need the directory layout, not just code chunks.
+    if re.search(r"folder|director|structure|organi|overview|each|layout", question, re.I):
+        root = _repo_root()
+        tree = []
+        for d in sorted(p for p in root.iterdir() if p.is_dir() and p.name not in _SKIP_DIRS)[:40]:
+            try:
+                names = [f.name for f in d.iterdir()][:6]
+            except Exception:
+                names = []
+            tree.append(f"{d.name}/ : {', '.join(names)}")
+        if tree:
+            context = "Top-level folders (name : sample contents):\n" + "\n".join(tree) + "\n\n" + context
     model = model or load_model()
     messages = [
         {"role": "system", "content":

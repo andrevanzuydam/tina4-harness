@@ -381,6 +381,20 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             except Exception as exc:
                 return f"Could not clone that repo: {exc}"
 
+    # If a repo is open, answer code/exploration questions FROM the repo (not the active cell).
+    try:
+        from . import repo as _repo
+
+        if _repo._index is not None and re.search(
+            r"\b(repo|repositor|codebase|folder|directory|director|structure|organi[sz]|"
+            r"what (does|is)|how (does|is)|summar|overview|explain|where|which file|list)\b",
+            last_user, re.I,
+        ):
+            _status("🔎 searching the repo…")
+            return _repo.ask_repo(last_user, max_tokens=600)
+    except Exception:
+        pass
+
     # Known non-Python syntax (??, &&, ||, ===) in the code being fixed → fix it deterministically,
     # no model guessing. This is always correct, which matters for beginners.
     if intent == "code" and context.strip():
