@@ -166,46 +166,68 @@ def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400) -> st
     """Answer a question about the cloned codebase, grounded in the retrieved code."""
     if _index is None:
         raise RuntimeError("Call open_repo(url) or index(path) first.")
+    # Structure/overview questions: list EVERY top-level folder deterministically (nothing dropped),
+    # described from its README first line, else its files. Standard one-bullet-per-folder format.
+    if re.search(r"folder|director|structure|organi|overview|each|layout", question, re.I):
+        return folder_overview()
     chunks = _index.retrieve(question, k=k)
     context = "\n\n".join(text for _cid, text, _s in chunks)
-    # Structure/folder questions need the directory layout, not just code chunks.
-    if re.search(r"folder|director|structure|organi|overview|each|layout", question, re.I):
-        root = _repo_root()
-        tree = []
-        for d in sorted(p for p in root.iterdir() if p.is_dir() and p.name not in _SKIP_DIRS)[:40]:
-            try:
-                names = [f.name for f in d.iterdir()][:6]
-            except Exception:
-                names = []
-            tree.append(f"{d.name}/ : {', '.join(names)}")
-        if tree:
-            context = "Top-level folders (name : sample contents):\n" + "\n".join(tree) + "\n\n" + context
-    structure = bool(re.search(r"folder|director|structure|organi|overview|each|layout", question, re.I))
-    if structure:
-        system = ("You describe a codebase using ONLY the provided folder list. Output EXACTLY one "
-                  "Markdown bullet per folder, in this format and nothing else:\n"
-                  "- **folder_name/** — one short sentence on what it contains.\n"
-                  "No heading, no table, no sub-bullets, no duplicates, no intro or outro.")
-    else:
-        system = ("You answer questions about a codebase using ONLY the code excerpts provided. Be "
-                  "specific and name the file/function. Answer in at most 5 sentences; if it is not "
-                  "in the excerpts, say so. No headings.")
+    model = model or load_model()
     messages = [
-        {"role": "system", "content": system},
+        {"role": "system", "content":
+            "You answer questions about a codebase using ONLY the code excerpts provided. Be specific "
+            "and name the file/function. Answer in at most 5 sentences; if it is not in the excerpts, "
+            "say so. No headings."},
         {"role": "user", "content": f"Code from the repository:\n{context[:5000]}\n\nQuestion: {question}"},
     ]
-    out = _strip_think(model.generate(messages, max_tokens=max_tokens))
-    if structure:  # keep one bullet per unique folder, drop anything that isn't a bullet
-        seen, lines = set(), []
-        for ln in out.splitlines():
-            m = re.match(r"\s*[-*]\s*\*\*(.+?)/\*\*", ln)
-            if not m:
+    return _strip_think(model.generate(messages, max_tokens=max_tokens))
+
+
+def _first_doc_line(d: Path) -> str:
+    """One-line description from a folder's README (any case/extension), else ''."""
+    for pat in ("README*", "readme*", "Readme*"):
+        for r in sorted(d.glob(pat)):
+            if not r.is_file():
                 continue
-            key = m.group(1).strip().lower().replace("-", "_").replace(" ", "_")
-            if key in seen:
-                continue
-            seen.add(key)
-            lines.append(ln.strip())
-        if lines:
-            out = "\n".join(lines)
-    return out
+            try:
+                for ln in r.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    s = ln.strip().lstrip("#").strip().strip("=").strip()
+                    if s and not s.startswith("!["):  # skip blank lines and badge images
+                        return s[:120]
+            except Exception:
+                return ""
+    return ""
+
+
+def folder_overview() -> str:
+    """Standardized, complete overview of the open repo — every top-level folder (nothing dropped),
+    described from its README first line else its files. Works for any repo layout, including ones
+    with code at the root or only a few folders."""
+    root = _repo_root()
+    dirs = sorted(
+        d for d in root.iterdir()
+        if d.is_dir() and d.name not in _SKIP_DIRS and not d.name.startswith(".")
+    )
+    root_files = sorted(
+        f.name for f in root.iterdir()
+        if f.is_file() and f.suffix.lower() in CODE_EXT and not f.name.startswith(".")
+    )
+    lines: list[str] = []
+    if dirs:
+        lines.append(f"**{len(dirs)} top-level folder(s) in {root.name}:**")
+        lines.append("")
+        for d in dirs:
+            desc = _first_doc_line(d)
+            if not desc:
+                names = sorted(f.name for f in d.iterdir() if f.is_file())[:5]
+                desc = ", ".join(names) if names else "(subfolders only)"
+            lines.append(f"- **{d.name}/** — {desc}")
+    # Always surface root-level code files too — some repos keep everything at the root.
+    if root_files:
+        if dirs:
+            lines += ["", f"**{len(root_files)} file(s) at the repo root:** " + ", ".join(root_files[:20])
+                      + ("…" if len(root_files) > 20 else "")]
+        else:
+            lines.append(f"**{root.name}** has no sub-folders; {len(root_files)} file(s) at the root:")
+            lines += [f"- {n}" for n in root_files[:40]]
+    return "\n".join(lines) if lines else f"{root.name} appears to be empty."
