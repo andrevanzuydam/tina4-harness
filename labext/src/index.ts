@@ -36,7 +36,8 @@ const chatIcon = new LabIcon({
 async function kernelEdit(
   panel: NotebookPanel,
   kind: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  onStatus?: (s: string) => void
 ): Promise<string> {
   const kernel = panel.sessionContext.session?.kernel;
   if (!kernel) {
@@ -53,7 +54,15 @@ async function kernelEdit(
   future.onIOPub = (msg: any): void => {
     const t = msg.header.msg_type;
     if (t === 'stream' && msg.content.name === 'stdout') {
-      buf += msg.content.text as string;
+      const text = msg.content.text as string;
+      if (onStatus) {
+        for (const ln of text.split('\n')) {
+          if (ln.startsWith('__HSTATUS__')) {
+            onStatus(ln.slice('__HSTATUS__'.length).trim());
+          }
+        }
+      }
+      buf += text;
     } else if (t === 'error') {
       buf += (msg.content.evalue as string) || 'kernel error';
     }
@@ -802,7 +811,9 @@ class ChatPanel extends Widget {
       this._send.disabled = true;
       const pending = await this._append('assistant', 'looking at the image…');
       try {
-        const answer = await kernelEdit(panel, 'vision', { image: imagePath, question: text });
+        const answer = await kernelEdit(panel, 'vision', { image: imagePath, question: text }, (s: string) => {
+          pending.textContent = s;
+        });
         pending.remove();
         this._messages.push({ role: 'assistant', content: answer });
         await this._append('assistant', answer);
@@ -857,8 +868,9 @@ class ChatPanel extends Widget {
     const mode: 'ask' | 'fix' | 'create' =
       isFix ? 'fix' : isCreate ? 'create' : hasError && !isQuestion ? 'fix' : 'ask';
 
-    // For a fix with no selection, give the agent the whole errored cell as the code to fix.
-    if (mode === 'fix' && !context && active) {
+    // ALWAYS give the model the active cell's code (if nothing is selected) so it never has to
+    // ask "what code?" — it has the code and the error in front of it.
+    if (!context && active) {
       context = active.model.sharedModel.getSource();
     }
 
@@ -869,13 +881,20 @@ class ChatPanel extends Widget {
     this._send.disabled = true;
     const pending = await this._append('assistant', '…');
     try {
-      const reply = await kernelEdit(panel, 'chat', {
-        messages: this._messages,
-        context,
-        notebook: this._notebookCode(panel),
-        output,
-        intent: mode === 'ask' ? 'ask' : 'code'
-      });
+      const reply = await kernelEdit(
+        panel,
+        'chat',
+        {
+          messages: this._messages,
+          context,
+          notebook: this._notebookCode(panel),
+          output,
+          intent: mode === 'ask' ? 'ask' : 'code'
+        },
+        (s: string) => {
+          pending.textContent = s;
+        }
+      );
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
       if (mode === 'ask') {

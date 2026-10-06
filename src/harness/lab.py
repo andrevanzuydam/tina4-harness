@@ -28,6 +28,14 @@ _pool: ThreadPoolExecutor | None = None
 _vision_fallback = None
 
 
+def _status(msg: str) -> None:
+    """Emit a live status line the chat shows while it works (read from the kernel's stdout)."""
+    try:
+        print("__HSTATUS__" + msg, flush=True)
+    except Exception:
+        pass
+
+
 def _threads() -> int:
     try:
         return max(1, int(os.environ.get("HARNESS_THREADS", "4")))
@@ -132,6 +140,7 @@ def _check(code: str) -> str:
             "Do NOT repeat the same point. Plain text only, no code fences."},
         {"role": "user", "content": f"Review this code:\n```\n{code}\n```"},
     ]
+    _status("🔎 reviewing the code…")
     review = _strip_think(_generate(messages, 1536))
     # Dedupe repeated bullet lines (a small model tends to repeat itself).
     seen, out = set(), []
@@ -240,12 +249,21 @@ def _valid_python(code: str):
 
 def _codegen(messages: list, max_tokens: int) -> str:
     """Generate code, then syntax-check it and retry ONCE with the error fed back."""
+    _status("✍️ writing code…")
     code = _code(_generate(messages, max_tokens))
-    if _is_placeholder(code):
-        return code
+    if _is_placeholder(code):  # let the model try again for real code, don't give up
+        _status("↻ asking for real code…")
+        retry = list(messages) + [
+            {"role": "assistant", "content": "```python\n" + code + "\n```"},
+            {"role": "user", "content": "Do NOT use a placeholder like '[complete solution]'. "
+                                        "Write the ACTUAL, complete, runnable Python code now."},
+        ]
+        code = _code(_generate(retry, max_tokens))
+    _status("🔎 checking syntax…")
     ok, err = _valid_python(code)
     if ok:
         return code
+    _status("↻ fixing a syntax error…")
     retry = list(messages) + [
         {"role": "assistant", "content": "```python\n" + code + "\n```"},
         {"role": "user", "content": f"That has a Python syntax error: {err}. {_py_hint(code)}. "
@@ -286,9 +304,6 @@ def _tidy_chat(reply: str, as_tool: bool) -> str:
         ln for ln in blocks[0].splitlines()
         if not ln.strip().startswith(">>>") and not ln.strip().startswith("...")
     ).strip()
-    if _is_placeholder(code):
-        # Never hand a beginner a stub like '[complete solution]'. Ask once, in plain words.
-        return "I didn't produce usable code there — select the exact line or cell and ask again, or add a little more detail about what it should do."
     if as_tool and code.startswith("def ") and "@tool" not in code:
         code = "@tool\n" + code
     first_line = prose.splitlines()[0].strip() if prose else ""
@@ -341,6 +356,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     if intent == "code" and context.strip():
         det = _deterministic_fix(context)
         if det != context and _valid_python(det)[0] and not _valid_python(context)[0]:
+            _status("🔧 rewriting non-Python syntax…")
             return "Rewrote the non-Python syntax to valid Python:\n\n```python\n" + det.strip() + "\n```"
     # Qwen's template allows only ONE system message, so fold everything into it.
     system_text = _CHAT_SYSTEM
@@ -371,6 +387,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         try:
             from . import pyhelp
 
+            _status("📚 grounding in the Python docs…")
             query = (last_user + " " + output.splitlines()[0]) if output else last_user
             docs = "\n\n".join(t[:600] for t, _s in pyhelp.search(query, k=2))
             if docs:
@@ -389,10 +406,31 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         recent.append(m)
         used += c
     recent.reverse()
+    _status("💭 thinking…")
     reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, 4096))
+    if intent == "code":
+        _status("🔎 checking syntax…")
     if intent == "ask":
         return _cap_prose(reply, 1000)  # an explanation to read in the chat — nothing inserted
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
+    # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).
+    m = _FENCE.search(tidied)
+    if m:
+        bad_placeholder = _is_placeholder(m.group(1))
+        ok, err = _valid_python(m.group(1))
+        if bad_placeholder or not ok:
+            _status("↻ fixing the code…")
+            why = "it was a placeholder" if bad_placeholder else f"it had a syntax error: {err}"
+            retry = recent + [
+                {"role": "assistant", "content": tidied},
+                {"role": "user", "content": f"That is not acceptable ({why}). {_py_hint(m.group(1))}. "
+                                            "Return ONLY the actual, complete, valid Python code."},
+            ]
+            reply2 = _strip_think(_generate([{"role": "system", "content": system_text}] + retry, 4096))
+            tidied2 = _tidy_chat(reply2, as_tool="tool" in last_user.lower())
+            m2 = _FENCE.search(tidied2)
+            if m2 and not _is_placeholder(m2.group(1)) and _valid_python(m2.group(1))[0]:
+                tidied = tidied2
     # A fix/edit request WANTS to redefine (the UI replaces the existing cell). A plain "add/use"
     # request should NOT redefine — strip any duplicate definition of names already in the notebook.
     is_revision = bool(re.search(r"\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)\w*", last_user, re.I))
@@ -420,6 +458,7 @@ def _vision(image: str, question: str) -> str:
 
     model = get_model()
     prompt = question or "Describe this image."
+    _status("🖼 looking at the image…")
     with _lock:
         if hasattr(model, "describe"):          # the MLX model does text AND vision
             return model.describe(str(path), prompt, max_tokens=512)
