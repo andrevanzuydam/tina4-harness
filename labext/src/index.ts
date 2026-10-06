@@ -22,6 +22,7 @@ const CMD = {
   create: 'tina4-harness:create-cell',
   fix: 'tina4-harness:fix-code',
   generate: 'tina4-harness:generate-here',
+  preview: 'tina4-harness:app-preview',
   chat: 'tina4-harness:open-chat'
 };
 
@@ -132,22 +133,26 @@ function selectionOf(cell: Cell): { from: number; to: number; scope: string } {
 /** A dialog body with a multi-line textarea. */
 class TextareaBody extends Widget {
   private _ta: HTMLTextAreaElement;
-  constructor(placeholder: string) {
+  constructor(placeholder: string, initial = '') {
     super();
     this.addClass('harness-dialog');
     this._ta = document.createElement('textarea');
     this._ta.placeholder = placeholder;
+    this._ta.value = initial;
     this._ta.rows = 4;
     this.node.appendChild(this._ta);
-    setTimeout(() => this._ta.focus(), 0);
+    setTimeout(() => {
+      this._ta.focus();
+      this._ta.select();
+    }, 0);
   }
   getValue(): string {
     return this._ta.value;
   }
 }
 
-async function promptText(title: string, placeholder: string, okLabel = 'Run'): Promise<string | null> {
-  const body = new TextareaBody(placeholder);
+async function promptText(title: string, placeholder: string, okLabel = 'Run', initial = ''): Promise<string | null> {
+  const body = new TextareaBody(placeholder, initial);
   const result = await showDialog({
     title,
     body,
@@ -242,6 +247,47 @@ async function proposeCode(
     return 'insert';
   }
   return 'cancel';
+}
+
+/** Open a running web app (e.g. a `tina4 serve` server) as an IFRAME tab inside JupyterLab's main
+ *  area, with a small toolbar (reload + open-in-browser). Keeps the preview beside the notebook. */
+function openAppPreview(app: JupyterFrontEnd, url: string): void {
+  const w = new Widget();
+  w.id = 'harness-preview-' + Date.now();
+  w.title.label = 'App Preview';
+  w.title.closable = true;
+  w.node.style.display = 'flex';
+  w.node.style.flexDirection = 'column';
+  w.node.style.height = '100%';
+
+  const bar = document.createElement('div');
+  bar.style.cssText =
+    'display:flex;gap:6px;align-items:center;padding:4px 8px;border-bottom:1px solid var(--jp-border-color2);';
+  const link = document.createElement('span');
+  link.textContent = url;
+  link.style.cssText = 'flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--jp-ui-font-size0);color:var(--jp-ui-font-color2);';
+  const reload = document.createElement('button');
+  reload.textContent = '⟳ Reload';
+  reload.className = 'jp-mod-styled';
+  const openExt = document.createElement('button');
+  openExt.textContent = '↗ Browser';
+  openExt.className = 'jp-mod-styled';
+  bar.appendChild(link);
+  bar.appendChild(reload);
+  bar.appendChild(openExt);
+
+  const iframe = document.createElement('iframe');
+  iframe.src = url;
+  iframe.style.cssText = 'flex:1 1 auto;width:100%;border:none;background:#fff;';
+  reload.onclick = () => {
+    iframe.src = url; // reassign to reload
+  };
+  openExt.onclick = () => window.open(url, '_blank');
+
+  w.node.appendChild(bar);
+  w.node.appendChild(iframe);
+  app.shell.add(w, 'main', { mode: 'split-right' });
+  app.shell.activateById(w.id);
 }
 
 function insertBelowWithSource(panel: NotebookPanel, source: string): Cell {
@@ -1218,6 +1264,23 @@ const plugin: JupyterFrontEndPlugin<void> = {
       }
     });
 
+    // ---- App Preview: open a running app (e.g. a tina4 server) as an IFRAME TAB in JupyterLab ----
+    app.commands.addCommand(CMD.preview, {
+      label: 'Harness: Open App Preview…',
+      execute: async () => {
+        const url = await promptText(
+          'App preview',
+          'URL of the running app to show in a JupyterLab tab',
+          'Open',
+          'http://localhost:7146/'
+        );
+        if (!url) {
+          return;
+        }
+        openAppPreview(app, url.trim());
+      }
+    });
+
     // ---- Context menu + palette ------------------------------------------
     // All harness actions live in their OWN "Harness" submenu in the right-click menu.
     const selector = '.jp-Notebook .jp-Cell';
@@ -1228,13 +1291,14 @@ const plugin: JupyterFrontEndPlugin<void> = {
     harnessMenu.addItem({ command: CMD.create });
     harnessMenu.addItem({ command: CMD.fix });
     harnessMenu.addItem({ type: 'separator' });
+    harnessMenu.addItem({ command: CMD.preview });
     harnessMenu.addItem({ command: CMD.chat });
     app.contextMenu.addItem({ type: 'separator', selector, rank: 0 });
     app.contextMenu.addItem({ type: 'submenu', submenu: harnessMenu, selector, rank: 0.1 });
     app.contextMenu.addItem({ type: 'separator', selector, rank: 0.2 });
 
     if (palette) {
-      [CMD.generate, CMD.check, CMD.create, CMD.fix, CMD.chat].forEach(command =>
+      [CMD.generate, CMD.check, CMD.create, CMD.fix, CMD.preview, CMD.chat].forEach(command =>
         palette.addItem({ command, category: 'Harness' })
       );
     }
