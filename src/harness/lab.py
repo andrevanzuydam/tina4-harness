@@ -122,7 +122,7 @@ def _create(prompt: str) -> str:
             "the request explicitly asks for it."},
         {"role": "user", "content": prompt},
     ]
-    return _code(_generate(messages, 800))
+    return _code(_generate(messages, 4096))
 
 
 def _check(code: str) -> str:
@@ -132,7 +132,7 @@ def _check(code: str) -> str:
             "bullet points. Plain text only, no code fences."},
         {"role": "user", "content": f"Review this code:\n```\n{code}\n```"},
     ]
-    return _strip_think(_generate(messages, 500))
+    return _strip_think(_generate(messages, 1536))
 
 
 def _fix(code: str, instruction: str) -> str:
@@ -152,7 +152,7 @@ def _fix(code: str, instruction: str) -> str:
             "block. No explanation."},
         {"role": "user", "content": f"Instruction: {instruction}\n\nCode:\n```\n{code}\n```"},
     ]
-    return _code(_generate(messages, 800))
+    return _code(_generate(messages, 4096))
 
 
 _CHAT_SYSTEM = (
@@ -178,7 +178,13 @@ def _tidy_chat(reply: str, as_tool: bool) -> str:
     blocks = [m.group(1).strip() for m in _FENCE.finditer(reply)]
     prose = _FENCE.sub("", reply).strip()
     if not blocks:
-        return reply
+        # Tolerate an UNCLOSED fence (rare, if generation still hit a cap): take what's after it.
+        opened = re.search(r"```[a-zA-Z0-9_+-]*\n(.*)$", reply, re.DOTALL)
+        if opened:
+            blocks = [opened.group(1).strip()]
+            prose = reply[: opened.start()].strip()
+        else:
+            return reply
     code = "\n".join(
         ln for ln in blocks[0].splitlines()
         if not ln.strip().startswith(">>>") and not ln.strip().startswith("...")
@@ -264,7 +270,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "") -> str:
         recent.append(m)
         used += c
     recent.reverse()
-    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, 900))
+    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, 4096))
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     if notebook_code:  # deterministically drop any re-definition of names already in the notebook
         tidied = _strip_redefs_in_reply(tidied, _defined_names(notebook_code))
