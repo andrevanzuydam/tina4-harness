@@ -16,10 +16,16 @@ import re
 import subprocess
 from pathlib import Path
 
-from .download import PROJECT_ROOT
 from .model import load_model
 
-REPOS_DIR = PROJECT_ROOT / "repos"
+
+def _repos_dir() -> Path:
+    """Clone into the NOTEBOOK's working directory (the 'notebook space') so it shows in the
+    file browser. Override with the HARNESS_REPOS_DIR env var."""
+    import os
+
+    base = os.environ.get("HARNESS_REPOS_DIR")
+    return (Path(base) if base else Path.cwd() / "repos")
 CODE_EXT = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".rb", ".php",
     ".c", ".cpp", ".cc", ".h", ".hpp", ".cs", ".swift", ".kt", ".scala",
@@ -34,9 +40,10 @@ _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 def clone(url: str, name: str | None = None, depth: int = 1) -> Path:
     """Shallow-clone ``url`` into repos/<name> (reused if already present)."""
-    REPOS_DIR.mkdir(parents=True, exist_ok=True)
+    repos_dir = _repos_dir()
+    repos_dir.mkdir(parents=True, exist_ok=True)
     name = name or url.rstrip("/").split("/")[-1].removesuffix(".git")
-    dest = REPOS_DIR / name
+    dest = repos_dir / name
     if dest.exists() and any(dest.iterdir()):
         return dest  # already cloned
     subprocess.run(
