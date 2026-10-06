@@ -599,33 +599,85 @@ def _tina4_target(text: str):
     return name, url, is_page
 
 
+def _tina4_title(text: str, name: str) -> str:
+    m = re.search(r"\b(?:titled|title|says?|saying|called)\s+['\"]?([^'\".]{2,50})", text, re.I)
+    if m:
+        return m.group(1).strip().title()
+    return name.replace("_", " ").title()
+
+
+def _tina4_endpoint_expr(text: str, name: str):
+    """Model generates ONLY the expression to return from response(...). Validated; safe fallback.
+    Returns (expr, extra_imports)."""
+    sys = ("You write ONE Python expression (a dict or value) — no statements, no code fence, no "
+           "assignment, no function. It will be placed inside `response(<expr>)` in an async web "
+           "handler. You MAY use datetime.now() and json. Examples:\n"
+           '  {"time": datetime.now().isoformat()}\n  {"items": [1, 2, 3]}\n'
+           "Return ONLY the expression.")
+    raw = _strip_think(_generate([{"role": "system", "content": sys},
+                                  {"role": "user", "content": f"Endpoint for: {text}"}], 200)).strip()
+    raw = raw.strip("`").splitlines()[0].strip() if raw else ""
+    raw = re.sub(r"^return\s+", "", raw)
+    try:
+        compile(f"({raw})", "<expr>", "eval")
+        expr = raw
+    except Exception:
+        expr = f'{{"{name}": "ok"}}'
+    imports = ""
+    if "datetime" in expr:
+        imports += "from datetime import datetime\n"
+    if re.search(r"\bjson\.", expr):
+        imports += "import json\n"
+    return expr, imports
+
+
 def _tina4_write(project, text: str, messages: list) -> str:
-    """Generate a Tina4 route (and a template for a page) and WRITE it into the project."""
+    """Scaffold a Tina4 route DETERMINISTICALLY (correct API, always valid) and let the model fill
+    only the content (a page's template, or an endpoint's return value). Writes into the project."""
     from . import tina4
 
     name, url, is_page = _tina4_target(text)
     _status(f"🛠 writing src/routes/{name}.py in {project.name}…")
     written = []
     if is_page:
-        tpl_sys = (tina4.PARADIGMS + "\n\nWrite ONLY a small, self-contained HTML Twig template "
-                   f"(src/templates/{name}.twig) for this page. Use plain HTML; you may use {{ var }} "
-                   "placeholders. No <script> to external CDNs (CSP is default-src 'self').")
+        title = _tina4_title(text, name)
+        tpl_sys = ("Write ONLY the HTML for a small, self-contained web page (a Twig template). Use "
+                   "{{ title }} where the title goes. Plain inline HTML/CSS only — no external "
+                   "scripts/fonts/CDNs. No code fence.")
         tpl = _code(_generate([{"role": "system", "content": tpl_sys},
-                               {"role": "user", "content": f"Page: {text}"}], 900))
+                               {"role": "user", "content": f"Page titled '{title}': {text}"}], 700))
+        if not tpl.strip() or "<" not in tpl:
+            tpl = f"<!doctype html>\n<html><head><title>{{{{ title }}}}</title></head>\n<body>\n  <h1>{{{{ title }}}}</h1>\n</body></html>"
         written.append(tina4.add_template(project, name, tpl))
-        route_sys = (tina4.PARADIGMS + f"\n\nWrite ONLY the Python for src/routes/{name}.py: a @get "
-                     f"route for path '{url}' whose async handler renders the template '{name}.twig' "
-                     "with response(template(...)). Import get and template from tina4_python.core.router.")
+        # Correct Tina4 pattern: @template BELOW @get; the handler returns a dict (the context).
+        route = (
+            "from tina4_python.core.router import get, template\n\n\n"
+            f'@get("{url}")\n'
+            f'@template("{name}.twig")\n'
+            f"async def {name}(request, response):\n"
+            f'    return {{"title": {title!r}}}\n'
+        )
     else:
-        route_sys = (tina4.PARADIGMS + f"\n\nWrite ONLY the Python for src/routes/{name}.py: a route "
-                     f"for path '{url}' that returns JSON via response({{...}}). Import the verb from "
-                     "tina4_python.core.router. Match the user's request exactly.")
-    route = _code(_generate([{"role": "system", "content": route_sys},
-                             {"role": "user", "content": text}], 900))
+        expr, imports = _tina4_endpoint_expr(text, name)
+        route = (
+            "from tina4_python.core.router import get\n"
+            + imports
+            + f'\n\n@get("{url}")\n'
+            f"async def {name}(request, response):\n"
+            f"    return response({expr})\n"
+        )
+    # Guarantee the route file is valid Python before writing (never break the server).
+    if not _valid_python(route)[0]:
+        route = (
+            "from tina4_python.core.router import get\n\n\n"
+            f'@get("{url}")\n'
+            f"async def {name}(request, response):\n"
+            f'    return response({{"{name}": "ok"}})\n'
+        )
     written.insert(0, tina4.add_route(project, name, route))
     files = ", ".join(f"`{w}`" for w in written)
     note = (f"Wrote {files} in **{project.name}** — route `{url}`. "
-            "Hot-reload will pick it up; the App Preview refreshes automatically.")
+            "tina4's hot-reload picks it up and the App Preview auto-refreshes.")
     return f"{_WROTE_SENTINEL}|{project}|{url}\n{note}\n\n```python\n{route.strip()}\n```"
 
 

@@ -27,7 +27,12 @@ PARADIGMS = """Tina4 Python conventions (follow these exactly):
         return response({"message": "Hello"})        # dict/list -> JSON automatically
 - Path params: @get("/user/{id}") -> async def h(request, response): request.params["id"].
 - Other verbs: post, put, patch, delete, websocket. Protect writes with @secured() (don't use @noauth()).
-- Render a template with response(template("page.twig", {"key": value})); templates live in src/templates (Twig/Frond).
+- Render a template with the @template decorator placed BELOW @get; the handler RETURNS a dict (the
+  context). Templates live in src/templates (Twig/Frond). Correct pattern:
+    @get("/dash")
+    @template("dash.twig")
+    async def dash(request, response):
+        return {"title": "Dashboard"}
 - Read JSON body via request.body (already parsed); query via request.params.
 - Database/ORM lives in src/orm; change schema ONLY through migrations (tina4 generate migration <name>), never ad-hoc SQL.
 - Run the app with `tina4 serve` (never `python app.py`) — it compiles SCSS and hot-reloads.
@@ -161,17 +166,21 @@ def _slug(name: str) -> str:
     return s or "index"
 
 
-def serve(cwd: str | Path, port: int = 7146, wait: bool = True) -> str:
-    """Start `tina4 serve` in the BACKGROUND (so a cell never blocks). Returns the app URL."""
+def serve(cwd: str | Path, port: int = 7146, wait: bool = True, reload: bool = True) -> str:
+    """Start `tina4 serve` in the BACKGROUND (so a cell never blocks). Returns the app URL.
+
+    Hot-reload is ON by default so the preview auto-refreshes when the harness writes a file."""
     global _server, _server_url, _server_project
     stop()
     _server_project = Path(cwd).resolve()
     log = Path(cwd) / "logs" / "harness-serve.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
+    args = [_client(), "serve", "--no-browser", "--port", str(port)]
+    if not reload:
+        args.insert(2, "--no-reload")
     _server = subprocess.Popen(
-        [_client(), "serve", "--no-browser", "--no-reload", "--port", str(port)],
-        cwd=str(cwd), stdout=log.open("w"), stderr=subprocess.STDOUT, env=env,
+        args, cwd=str(cwd), stdout=log.open("w"), stderr=subprocess.STDOUT, env=env,
     )
     _server_url = f"http://localhost:{port}/"
     if wait:
