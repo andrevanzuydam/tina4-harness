@@ -151,6 +151,15 @@
   background: var(--jp-brand-color3);
   white-space: pre-wrap;
 }
+.harness-context {
+  background: transparent;
+  border: 1px dashed var(--jp-border-color2);
+  color: var(--jp-ui-font-color2);
+  font-size: var(--jp-ui-font-size0);
+}
+.harness-context pre {
+  margin: 2px 0;
+}
 .harness-assistant {
   background: var(--jp-layout-color2);
 }
