@@ -301,6 +301,25 @@ def _is_placeholder(code: str) -> bool:
     return False
 
 
+def _strip_script_scaffold(code: str) -> str:
+    """Make generated code safe to drop in a cell: remove the `if __name__ == "__main__":` block
+    (and any trailing bare `main()` call) so running the cell can't kick off an interactive script
+    that blocks on input(). Function/class definitions and example CALLS are kept."""
+    lines = code.splitlines()
+    out = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if re.match(r"\s*if\s+__name__\s*==\s*['\"]__main__['\"]\s*:", ln):
+            break  # drop this block and everything after it
+        out.append(ln)
+        i += 1
+    # Drop a trailing bare `main()` / `main( )` call left at top level (it would run on cell exec).
+    while out and re.match(r"\s*main\s*\(\s*\)\s*$", out[-1]):
+        out.pop()
+    return "\n".join(out).strip() or code.strip()
+
+
 def _tidy_chat(reply: str, as_tool: bool) -> str:
     """Keep a chat reply notebook-friendly: at most one clean ```python block, one line of prose.
     Drops REPL (>>> / ...) example lines, and adds @tool when the user asked for a tool."""
@@ -320,6 +339,7 @@ def _tidy_chat(reply: str, as_tool: bool) -> str:
         ln for ln in blocks[0].splitlines()
         if not ln.strip().startswith(">>>") and not ln.strip().startswith("...")
     ).strip()
+    code = _strip_script_scaffold(code)
     if as_tool and code.startswith("def ") and "@tool" not in code:
         code = "@tool\n" + code
     first_line = prose.splitlines()[0].strip() if prose else ""

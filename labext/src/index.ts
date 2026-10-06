@@ -712,7 +712,11 @@ class ChatPanel extends Widget {
       cell = r.cell;
       mode = r.created ? 'created' : 'filled';
     }
-    await runCell(panel, cell);
+    // Don't auto-run code that reads stdin — it would hang the cell waiting for input().
+    const readsInput = /(^|[^.\w])input\s*\(/.test(code);
+    if (!readsInput) {
+      await runCell(panel, cell);
+    }
 
     let on = true;
     const revert = (): void => {
@@ -739,10 +743,12 @@ class ChatPanel extends Widget {
     bubble.className = 'harness-msg harness-assistant';
     const note = document.createElement('div');
     note.className = 'harness-codenote';
+    const ran = readsInput ? ' (not run — it reads input())' : ' and ran it.';
+    const tail = readsInput ? '.' : '';
     note.textContent =
-      mode === 'replaced' ? '✓ Updated the existing cell and ran it.'
-      : mode === 'created' ? '✓ Added a cell and ran it.'
-      : '✓ Filled the blank cell and ran it.';
+      mode === 'replaced' ? `✓ Updated the existing cell${ran}${tail}`
+      : mode === 'created' ? `✓ Added a cell${ran}${tail}`
+      : `✓ Filled the blank cell${ran}${tail}`;
     bubble.appendChild(note);
 
     const pills = document.createElement('div');
@@ -958,12 +964,18 @@ class ChatPanel extends Widget {
     // Three modes: a QUESTION explains (no cell); a FIX edits in place (no new cell); only a
     // CREATE/build/add request writes a NEW cell. Debugging never spams cells.
     const isFix = /\b(fix|debug|edit|updat|chang|refactor|rewrit|modif|correct|repair|solve)/i.test(text);
-    const isCreate = /\b(write|build|creat|make|add|generat|implement|tool|method|function|class|script|program)/i.test(text);
+    const isCreate = /\b(write|build|creat|make|add|generat|implement|tool|method|function|class|script|program|use|run|call|demo|try|invoke|exercise)\b/i.test(text);
+    // An explicit "in a cell" / "new cell" means they want a CELL — honour it even over a question.
+    const wantsCell = /\b(in|into|as|to)\s+a?\s*(new\s+)?cell\b/i.test(text) || /\bnew cell\b/i.test(text);
     const hasError = /error|traceback/i.test(output);
     const isQuestion = /\b(what|why|how|explain|mean)\b/i.test(text);
-    // With an error present and no clear question, assume you want it fixed.
+    // A QUESTION explains (no cell); a FIX edits in place; a CREATE/use/run request writes a cell.
     const mode: 'ask' | 'fix' | 'create' =
-      isFix ? 'fix' : isCreate ? 'create' : hasError && !isQuestion ? 'fix' : 'ask';
+      isFix ? 'fix'
+      : wantsCell ? 'create'
+      : isCreate && !isQuestion ? 'create'
+      : hasError && !isQuestion ? 'fix'
+      : 'ask';
 
     // ALWAYS give the model the active cell's code (if nothing is selected) so it never has to
     // ask "what code?" — it has the code and the error in front of it.
