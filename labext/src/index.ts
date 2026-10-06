@@ -45,9 +45,21 @@ async function kernelEdit(
     throw new Error('No kernel is running for this notebook.');
   }
   const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-  const code =
+  // Make `harness` importable in ANY fresh kernel, without depending on the notebook's setup cell
+  // having run: walk up from the kernel's cwd and add every `<dir>/src` that contains `harness`.
+  const bootstrap =
     'import sys, os\n' +
-    "sys.path[:0] = [p for p in ('src', '../src') if os.path.isdir(p) and p not in sys.path]\n" +
+    '_d = os.getcwd()\n' +
+    'for _ in range(8):\n' +
+    "    _s = os.path.join(_d, 'src')\n" +
+    "    if os.path.isdir(os.path.join(_s, 'harness')) and _s not in sys.path:\n" +
+    '        sys.path.insert(0, _s)\n' +
+    '    _p = os.path.dirname(_d)\n' +
+    '    if _p == _d:\n' +
+    '        break\n' +
+    '    _d = _p\n';
+  const code =
+    bootstrap +
     'import harness.lab as _hl\n' +
     `print(_hl.harness_edit(${JSON.stringify(kind)}, "${b64}"))`;
   const future = kernel.requestExecute({ code, stop_on_error: false, store_history: false });
