@@ -248,10 +248,20 @@ def _strip_redefs_in_reply(reply: str, existing: set) -> str:
     return reply[: m.start()] + "```python\n" + cleaned + "\n```" + reply[m.end():]
 
 
-def _chat(messages: list, context: str = "", notebook_code: str = "") -> str:
+def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "", intent: str = "code") -> str:
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
     # Qwen's template allows only ONE system message, so fold everything into it.
     system_text = _CHAT_SYSTEM
+    if intent == "ask":
+        system_text += (
+            "\n\nThis is a QUESTION, not a build request. EXPLAIN clearly in a few sentences; show at "
+            "most a tiny corrected snippet inline. Do NOT output a full program or a cell to run."
+        )
+    if output:
+        system_text += (
+            "\n\nThe active cell's latest OUTPUT / ERROR is below. If it is an error, use it to find "
+            "the cause and fix it:\n" + output[-1800:]
+        )
     if notebook_code:
         system_text += (
             "\n\nThe notebook ALREADY contains this code — reuse these names and do NOT rewrite or "
@@ -285,6 +295,8 @@ def _chat(messages: list, context: str = "", notebook_code: str = "") -> str:
         used += c
     recent.reverse()
     reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, 4096))
+    if intent == "ask":
+        return _cap_prose(reply, 1000)  # an explanation to read in the chat — nothing inserted
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # A fix/edit request WANTS to redefine (the UI replaces the existing cell). A plain "add/use"
     # request should NOT redefine — strip any duplicate definition of names already in the notebook.
@@ -368,7 +380,10 @@ def harness_edit(kind: str, b64: str) -> str:
         elif kind == "fix":
             text = _fix(data["code"], data["instruction"])
         elif kind == "chat":
-            text = _chat(data["messages"], data.get("context", ""), data.get("notebook", ""))
+            text = _chat(
+                data["messages"], data.get("context", ""), data.get("notebook", ""),
+                data.get("output", ""), data.get("intent", "code"),
+            )
         elif kind == "vision":
             text = _vision(data["image"], data.get("question", ""))
         elif kind == "chat_load":

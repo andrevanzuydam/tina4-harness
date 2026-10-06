@@ -232,6 +232,27 @@ async function newNotebookWithCode(app: JupyterFrontEnd, code: string): Promise<
   }
 }
 
+/** The active cell's output/error as text (so the model can help fix problems). */
+function cellOutputText(cell: Cell): string {
+  const model: any = cell.model;
+  const outs = model.outputs;
+  if (!outs || typeof outs.toJSON !== 'function') {
+    return '';
+  }
+  let txt = '';
+  for (const o of outs.toJSON()) {
+    if (o.output_type === 'stream') {
+      txt += o.text;
+    } else if (o.output_type === 'execute_result' || o.output_type === 'display_data') {
+      txt += (o.data && o.data['text/plain']) || '';
+    } else if (o.output_type === 'error') {
+      txt += `${o.ename}: ${o.evalue}\n` + (o.traceback || []).join('\n');
+    }
+  }
+  // strip ANSI colour codes and cap length
+  return txt.replace(/\u001b\[[0-9;]*m/g, '').trim().slice(-1800);
+}
+
 /** Top-level names (functions/classes) a snippet defines. */
 function definedNames(code: string): Set<string> {
   const names = new Set<string>();
@@ -302,6 +323,7 @@ class ChatPanel extends Widget {
   private _input: HTMLTextAreaElement;
   private _send: HTMLButtonElement;
   private _ctxLabel: HTMLSpanElement;
+  private _lastSel: { cell: Cell; from: number; to: number } | null = null;
   private _histories = new Map<string, { role: string; content: string }[]>();
   private _currentKey = '';
   private _messages: { role: string; content: string }[] = [];
@@ -358,6 +380,9 @@ class ChatPanel extends Widget {
         void this._submit();
       }
     });
+    // Snapshot the cell selection the moment you reach for the chat (before the cell blurs).
+    this._input.addEventListener('pointerdown', () => this._snapshotSelection());
+    this._input.addEventListener('focus', () => this._snapshotSelection());
 
     // Conversation follows the active notebook / file.
     const shell: any = this.app.shell;
@@ -467,6 +492,18 @@ class ChatPanel extends Widget {
         const { prose, blocks } = splitCode(m.content);
         await this._append('assistant', prose || (blocks.length ? '📝 (code drafted earlier)' : m.content));
       }
+    }
+  }
+
+  /** Remember the cell selection at the moment the chat input is reached for. */
+  private _snapshotSelection(): void {
+    const cell = this.tracker.currentWidget?.content.activeCell;
+    if (!cell) {
+      return;
+    }
+    const { from, to, scope } = selectionOf(cell);
+    if (scope === 'selection') {
+      this._lastSel = { cell, from, to };
     }
   }
 
@@ -656,17 +693,33 @@ class ChatPanel extends Widget {
       return;
     }
 
-    // If you've highlighted code in a cell, send it as context so "this"/"it" is understood.
+    // Selection: prefer the snapshot taken when you reached for the chat (before the cell blurred).
     let context = '';
-    let sel: { cell: Cell; from: number; to: number } | null = null;
-    const cell = panel.content.activeCell;
-    if (cell) {
-      const { from, to, scope } = selectionOf(cell);
-      if (scope === 'selection') {
-        context = cell.model.sharedModel.getSource().slice(from, to);
-        sel = { cell, from, to };
+    let sel = this._lastSel;
+    this._lastSel = null;
+    if (!sel) {
+      const c = panel.content.activeCell;
+      if (c) {
+        const r = selectionOf(c);
+        if (r.scope === 'selection') {
+          sel = { cell: c, from: r.from, to: r.to };
+        }
       }
     }
+    if (sel) {
+      const t = sel.cell.model.sharedModel.getSource().slice(sel.from, sel.to);
+      if (t.trim()) {
+        context = t;
+      } else {
+        sel = null;
+      }
+    }
+    // The active cell's output/error, so the model can help fix problems.
+    const active = panel.content.activeCell;
+    const output = active ? cellOutputText(active) : '';
+    // A question gets an EXPLANATION (nothing inserted); a build/fix request writes code.
+    const wantsCode =
+      /\b(write|build|create|make|add|fix|edit|update|change|refactor|implement|generate|rewrite|tool|method|function|class|script)\b/i.test(text);
 
     this._messages.push({ role: 'user', content: text });
     await this._append('user', text + (context ? '\n\n↳ (with your selection)' : ''));
@@ -677,21 +730,27 @@ class ChatPanel extends Widget {
       const reply = await kernelEdit(panel, 'chat', {
         messages: this._messages,
         context,
-        notebook: this._notebookCode(panel)
+        notebook: this._notebookCode(panel),
+        output,
+        intent: wantsCode ? 'code' : 'ask'
       });
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
-      // A fix/edit request edits the matching cell in place instead of adding a duplicate.
-      const isRevision = /\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)/i.test(text);
-      const { prose, blocks } = splitCode(reply);
-      if (prose) {
-        await this._append('assistant', prose);
-      }
-      for (const code of blocks) {
-        await this._offerCode(panel, code, sel, isRevision);
-      }
-      if (!prose && !blocks.length) {
-        await this._append('assistant', '(no reply)');
+      if (!wantsCode) {
+        // A question: show the explanation in the chat, insert nothing.
+        await this._append('assistant', reply || '(no reply)');
+      } else {
+        const isRevision = /\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)/i.test(text);
+        const { prose, blocks } = splitCode(reply);
+        if (prose) {
+          await this._append('assistant', prose);
+        }
+        for (const code of blocks) {
+          await this._offerCode(panel, code, sel, isRevision);
+        }
+        if (!prose && !blocks.length) {
+          await this._append('assistant', '(no reply)');
+        }
       }
       this._save();
     } catch (e: any) {

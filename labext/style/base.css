@@ -126,6 +126,27 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* The model loves Markdown headings — keep them from becoming giant titles in the chat. */
+.harness-msg h1,
+.harness-msg h2,
+.harness-msg h3,
+.harness-msg h4,
+.harness-msg h5,
+.harness-msg h6 {
+  font-size: var(--jp-ui-font-size1);
+  font-weight: 600;
+  margin: 4px 0 2px;
+  line-height: 1.3;
+  border: none;
+}
+.harness-msg p {
+  margin: 4px 0;
+}
+.harness-msg ul,
+.harness-msg ol {
+  margin: 4px 0;
+  padding-left: 18px;
+}
 .harness-user {
   background: var(--jp-brand-color3);
   white-space: pre-wrap;
