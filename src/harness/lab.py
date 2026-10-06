@@ -128,11 +128,21 @@ def _create(prompt: str) -> str:
 def _check(code: str) -> str:
     messages = [
         {"role": "system", "content":
-            "You are a concise code reviewer. List issues and concrete suggestions as short "
-            "bullet points. Plain text only, no code fences."},
+            "You are a concise code reviewer. List at most 5 DISTINCT issues as short bullet points. "
+            "Do NOT repeat the same point. Plain text only, no code fences."},
         {"role": "user", "content": f"Review this code:\n```\n{code}\n```"},
     ]
-    return _strip_think(_generate(messages, 1536))
+    review = _strip_think(_generate(messages, 1536))
+    # Dedupe repeated bullet lines (a small model tends to repeat itself).
+    seen, out = set(), []
+    for ln in review.splitlines():
+        key = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", ln).strip().lower()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        out.append(ln)
+    return "\n".join(out).strip()
 
 
 def _fix(code: str, instruction: str) -> str:
