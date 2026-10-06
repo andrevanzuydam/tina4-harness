@@ -1,32 +1,41 @@
 /**
  * tina4-harness-lab — right-click a notebook cell to use the notebook's OWN local model.
  *
- *   • Check Code   — review the active cell's code
- *   • Create Cell  — describe a cell; the model writes it (e.g. a SWAPI JSON lookup) and runs it
- *   • Fix Code     — rewrite the highlighted selection (or the whole cell) from an instruction
+ *   • Check Code   — review the active cell (rendered as Markdown)
+ *   • Create Cell  — describe a cell; the model writes it; you Insert / run it
+ *   • Fix Code     — rewrite the HIGHLIGHTED selection (or the whole cell); you Replace / Insert
  *
- * The extension never ships a model. It calls a tiny Python function, `__harness_edit`, that runs
- * in the notebook's kernel and uses the already-loaded `model` (loading it on first use if needed).
- * So a clean notebook + a local LLM is all you need.
+ * Suggestions are shown first (syntax-highlighted) with Replace / Insert below / Cancel — nothing
+ * changes until you choose. The model runs in the notebook's kernel (loaded on first use if needed),
+ * so a clean notebook + a local LLM is all you need.
  */
-import {
-  JupyterFrontEnd,
-  JupyterFrontEndPlugin
-} from '@jupyterlab/application';
+import { JupyterFrontEnd, JupyterFrontEndPlugin } from '@jupyterlab/application';
 import { Dialog, ICommandPalette, Notification, showDialog } from '@jupyterlab/apputils';
 import { INotebookTracker, NotebookActions, NotebookPanel } from '@jupyterlab/notebook';
+import { Cell } from '@jupyterlab/cells';
+import { IRenderMimeRegistry } from '@jupyterlab/rendermime';
+import { LabIcon } from '@jupyterlab/ui-components';
 import { Widget } from '@lumino/widgets';
 
 const CMD = {
   check: 'tina4-harness:check-code',
   create: 'tina4-harness:create-cell',
-  fix: 'tina4-harness:fix-code'
+  fix: 'tina4-harness:fix-code',
+  chat: 'tina4-harness:open-chat'
 };
+
+const chatIcon = new LabIcon({
+  name: 'tina4-harness:chat',
+  svgstr:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16">' +
+    '<path class="jp-icon3" fill="#616161" d="M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm3 6h10v-2H7v2zm0 4h7v-2H7v2z"/>' +
+    '</svg>'
+});
 
 /** Run `__harness_edit(kind, payload)` in the kernel and return the model's text. */
 async function kernelEdit(
   panel: NotebookPanel,
-  kind: 'create' | 'check' | 'fix',
+  kind: string,
   payload: Record<string, unknown>
 ): Promise<string> {
   const kernel = panel.sessionContext.session?.kernel;
@@ -34,19 +43,12 @@ async function kernelEdit(
     throw new Error('No kernel is running for this notebook.');
   }
   const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-  // Self-bootstrapping: make `harness` importable even if the notebook's setup cell
-  // hasn't run yet (the kernel's cwd is the project root or notebooks/).
   const code =
     'import sys, os\n' +
     "sys.path[:0] = [p for p in ('src', '../src') if os.path.isdir(p) and p not in sys.path]\n" +
     'import harness.lab as _hl\n' +
     `print(_hl.harness_edit(${JSON.stringify(kind)}, "${b64}"))`;
-  const future = kernel.requestExecute({
-    code,
-    stop_on_error: false,
-    store_history: false,
-    silent: false
-  });
+  const future = kernel.requestExecute({ code, stop_on_error: false, store_history: false });
   let buf = '';
   future.onIOPub = (msg: any): void => {
     const t = msg.header.msg_type;
@@ -60,9 +62,7 @@ async function kernelEdit(
   const marker = '__HARNESS__';
   const i = buf.lastIndexOf(marker);
   if (i < 0) {
-    throw new Error(
-      'No reply from the kernel. Is the harness installed and the kernel running?'
-    );
+    throw new Error('No reply from the kernel. Is the harness on the path and the kernel running?');
   }
   const line = buf.slice(i + marker.length).split('\n')[0].trim();
   const res = JSON.parse(line);
@@ -72,15 +72,42 @@ async function kernelEdit(
   return res.text as string;
 }
 
+/** The live selection in a cell's CodeMirror editor, or the whole cell if nothing is highlighted. */
+function selectionOf(cell: Cell): { from: number; to: number; scope: string } {
+  const src = cell.model.sharedModel.getSource();
+  const editor: any = cell.editor;
+  // 1) CodeMirror 6 EditorView — the ground truth for what is highlighted right now.
+  try {
+    const view = editor?.editor;
+    const main = view?.state?.selection?.main;
+    if (main && main.to > main.from) {
+      return { from: main.from, to: main.to, scope: 'selection' };
+    }
+  } catch {
+    /* fall through */
+  }
+  // 2) CodeEditor API fallback.
+  try {
+    const sel = editor.getSelection();
+    const f = editor.getOffsetAt(sel.start);
+    const t = editor.getOffsetAt(sel.end);
+    if (t > f) {
+      return { from: f, to: t, scope: 'selection' };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { from: 0, to: src.length, scope: 'cell' };
+}
+
 /** A dialog body with a multi-line textarea. */
 class TextareaBody extends Widget {
   private _ta: HTMLTextAreaElement;
-  constructor(placeholder: string, initial = '') {
+  constructor(placeholder: string) {
     super();
     this.addClass('harness-dialog');
     this._ta = document.createElement('textarea');
     this._ta.placeholder = placeholder;
-    this._ta.value = initial;
     this._ta.rows = 4;
     this.node.appendChild(this._ta);
     setTimeout(() => this._ta.focus(), 0);
@@ -90,23 +117,7 @@ class TextareaBody extends Widget {
   }
 }
 
-/** A dialog body that shows read-only text in a <pre>. */
-class PreBody extends Widget {
-  constructor(text: string) {
-    super();
-    this.addClass('harness-dialog');
-    const pre = document.createElement('pre');
-    pre.className = 'harness-pre';
-    pre.textContent = text;
-    this.node.appendChild(pre);
-  }
-}
-
-async function promptText(
-  title: string,
-  placeholder: string,
-  okLabel = 'Run'
-): Promise<string | null> {
+async function promptText(title: string, placeholder: string, okLabel = 'Run'): Promise<string | null> {
   const body = new TextareaBody(placeholder);
   const result = await showDialog({
     title,
@@ -116,21 +127,168 @@ async function promptText(
   if (!result.button.accept) {
     return null;
   }
-  const value = body.getValue().trim();
-  return value || null;
+  return body.getValue().trim() || null;
+}
+
+/** Render Markdown (incl. tables and ```code``` with highlighting) into a dialog body widget. */
+async function markdownWidget(rendermime: IRenderMimeRegistry, md: string): Promise<Widget> {
+  const renderer = rendermime.createRenderer('text/markdown');
+  await renderer.renderModel(
+    rendermime.createModel({ data: { 'text/markdown': md }, trusted: true })
+  );
+  const node = document.createElement('div');
+  node.className = 'harness-md';
+  node.appendChild(renderer.node);
+  const widget = new Widget({ node });
+  widget.addClass('harness-dialog');
+  return widget;
+}
+
+type CodeChoice = 'replace' | 'insert' | 'cancel';
+
+/** Show suggested code (highlighted) and let the user choose what to do with it. */
+async function proposeCode(
+  rendermime: IRenderMimeRegistry,
+  title: string,
+  code: string,
+  allowReplace: boolean
+): Promise<CodeChoice> {
+  const body = await markdownWidget(rendermime, '```python\n' + code + '\n```');
+  const buttons = [Dialog.cancelButton({ label: 'Cancel' }), Dialog.createButton({ label: 'Insert below' })];
+  if (allowReplace) {
+    buttons.push(Dialog.createButton({ label: 'Replace' }));
+  }
+  const result = await showDialog({ title, body, buttons });
+  const label = result.button.label;
+  if (label === 'Replace') {
+    return 'replace';
+  }
+  if (label === 'Insert below') {
+    return 'insert';
+  }
+  return 'cancel';
+}
+
+function insertBelowWithSource(panel: NotebookPanel, source: string): Cell {
+  NotebookActions.insertBelow(panel.content);
+  const cell = panel.content.activeCell!;
+  cell.model.sharedModel.setSource(source);
+  return cell;
+}
+
+/** A side-panel chat with the notebook's local model — for ideating and drafting. */
+class ChatPanel extends Widget {
+  private _log: HTMLDivElement;
+  private _input: HTMLTextAreaElement;
+  private _send: HTMLButtonElement;
+  private _messages: { role: string; content: string }[] = [];
+
+  constructor(
+    private tracker: INotebookTracker,
+    private rendermime: IRenderMimeRegistry
+  ) {
+    super();
+    this.id = 'tina4-harness-chat';
+    this.addClass('harness-chat');
+    this.title.icon = chatIcon;
+    this.title.caption = 'Harness chat (local model)';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'harness-chat-wrap';
+    this._log = document.createElement('div');
+    this._log.className = 'harness-chat-log';
+    const row = document.createElement('div');
+    row.className = 'harness-chat-input';
+    this._input = document.createElement('textarea');
+    this._input.rows = 2;
+    this._input.placeholder = 'Ask or ideate…  (Enter to send, Shift+Enter for a newline)';
+    this._send = document.createElement('button');
+    this._send.textContent = 'Send';
+    this._send.className = 'jp-mod-styled jp-mod-accept';
+    row.appendChild(this._input);
+    row.appendChild(this._send);
+    wrap.appendChild(this._log);
+    wrap.appendChild(row);
+    this.node.appendChild(wrap);
+
+    this._send.onclick = () => void this._submit();
+    this._input.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        void this._submit();
+      }
+    });
+    void this._append('assistant', 'Hi! I run on this notebook’s local model. Ask me to ideate or draft code — then use **Create Cell** to drop it in.');
+  }
+
+  private async _append(role: string, content: string): Promise<HTMLElement> {
+    const bubble = document.createElement('div');
+    bubble.className = 'harness-msg harness-' + role;
+    if (role === 'assistant') {
+      const r = this.rendermime.createRenderer('text/markdown');
+      await r.renderModel(this.rendermime.createModel({ data: { 'text/markdown': content }, trusted: true }));
+      bubble.appendChild(r.node);
+    } else {
+      bubble.textContent = content;
+    }
+    this._log.appendChild(bubble);
+    this._log.scrollTop = this._log.scrollHeight;
+    return bubble;
+  }
+
+  private async _submit(): Promise<void> {
+    const text = this._input.value.trim();
+    if (!text) {
+      return;
+    }
+    this._input.value = '';
+    this._messages.push({ role: 'user', content: text });
+    await this._append('user', text);
+
+    const panel = this.tracker.currentWidget;
+    if (!panel) {
+      await this._append('assistant', 'Open a notebook first — I use its kernel.');
+      return;
+    }
+    this._send.disabled = true;
+    const pending = await this._append('assistant', '…');
+    try {
+      const reply = await kernelEdit(panel, 'chat', { messages: this._messages });
+      this._messages.push({ role: 'assistant', content: reply });
+      pending.remove();
+      await this._append('assistant', reply);
+    } catch (e: any) {
+      pending.remove();
+      await this._append('assistant', 'Error: ' + e.message);
+    } finally {
+      this._send.disabled = false;
+    }
+  }
 }
 
 const plugin: JupyterFrontEndPlugin<void> = {
   id: 'tina4-harness-lab:plugin',
   autoStart: true,
-  requires: [INotebookTracker],
+  requires: [INotebookTracker, IRenderMimeRegistry],
   optional: [ICommandPalette],
   activate: (
     app: JupyterFrontEnd,
     tracker: INotebookTracker,
+    rendermime: IRenderMimeRegistry,
     palette: ICommandPalette | null
   ): void => {
     const current = (): NotebookPanel | null => tracker.currentWidget;
+
+    // ---- Chat side panel --------------------------------------------------
+    const chat = new ChatPanel(tracker, rendermime);
+    app.shell.add(chat, 'right', { rank: 900 });
+    app.commands.addCommand(CMD.chat, {
+      label: 'Harness: Open Chat',
+      icon: chatIcon,
+      execute: () => {
+        app.shell.activateById(chat.id);
+      }
+    });
 
     // ---- Check Code -------------------------------------------------------
     app.commands.addCommand(CMD.check, {
@@ -146,9 +304,10 @@ const plugin: JupyterFrontEndPlugin<void> = {
         try {
           const review = await kernelEdit(panel, 'check', { code });
           Notification.dismiss(id);
+          const body = await markdownWidget(rendermime, review);
           await showDialog({
             title: 'Harness — code review',
-            body: new PreBody(review),
+            body,
             buttons: [Dialog.okButton({ label: 'Close' })]
           });
         } catch (e: any) {
@@ -173,15 +332,18 @@ const plugin: JupyterFrontEndPlugin<void> = {
           return;
         }
         const id = Notification.emit('Harness: writing a cell…', 'in-progress');
+        let code: string;
         try {
-          const codeText = await kernelEdit(panel, 'create', { prompt });
-          NotebookActions.insertBelow(panel.content);
-          const cell = panel.content.activeCell!;
-          cell.model.sharedModel.setSource(codeText);
-          await NotebookActions.run(panel.content, panel.sessionContext);
-          Notification.update({ id, message: 'Harness: cell created & run', type: 'success', autoClose: 2500 });
+          code = await kernelEdit(panel, 'create', { prompt });
+          Notification.dismiss(id);
         } catch (e: any) {
           Notification.update({ id, message: `Harness: ${e.message}`, type: 'error', autoClose: 5000 });
+          return;
+        }
+        const choice = await proposeCode(rendermime, 'Suggested cell', code, false);
+        if (choice === 'insert') {
+          insertBelowWithSource(panel, code);
+          await NotebookActions.run(panel.content, panel.sessionContext);
         }
       }
     });
@@ -195,37 +357,31 @@ const plugin: JupyterFrontEndPlugin<void> = {
         if (!panel || !cell) {
           return;
         }
-        const editor = cell.editor;
         const src = cell.model.sharedModel.getSource();
-        let from = 0;
-        let to = src.length;
-        let scope = 'cell';
-        if (editor) {
-          const sel = editor.getSelection();
-          const f = editor.getOffsetAt(sel.start);
-          const t = editor.getOffsetAt(sel.end);
-          if (t > f) {
-            from = f;
-            to = t;
-            scope = 'selection';
-          }
-        }
-        const selected = src.slice(from, to);
+        const { from, to, scope } = selectionOf(cell);
+        const target = src.slice(from, to);
         const instruction = await promptText(
           `Fix ${scope}`,
           'What should change? e.g. "add error handling and a docstring"',
-          'Apply'
+          'Suggest'
         );
         if (!instruction) {
           return;
         }
         const id = Notification.emit(`Harness: fixing ${scope}…`, 'in-progress');
+        let fixed: string;
         try {
-          const fixed = await kernelEdit(panel, 'fix', { code: selected, instruction });
-          cell.model.sharedModel.updateSource(from, to, fixed);
-          Notification.update({ id, message: `Harness: ${scope} replaced`, type: 'success', autoClose: 2500 });
+          fixed = await kernelEdit(panel, 'fix', { code: target, instruction });
+          Notification.dismiss(id);
         } catch (e: any) {
           Notification.update({ id, message: `Harness: ${e.message}`, type: 'error', autoClose: 5000 });
+          return;
+        }
+        const choice = await proposeCode(rendermime, `Suggested fix (${scope})`, fixed, true);
+        if (choice === 'replace') {
+          cell.model.sharedModel.updateSource(from, to, fixed);
+        } else if (choice === 'insert') {
+          insertBelowWithSource(panel, fixed);
         }
       }
     });
@@ -239,7 +395,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
     app.contextMenu.addItem({ type: 'separator', selector, rank: 4 });
 
     if (palette) {
-      [CMD.check, CMD.create, CMD.fix].forEach(command =>
+      [CMD.check, CMD.create, CMD.fix, CMD.chat].forEach(command =>
         palette.addItem({ command, category: 'Harness' })
       );
     }

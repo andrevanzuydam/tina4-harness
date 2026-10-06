@@ -17,3 +17,69 @@
   font-size: var(--jp-code-font-size, 13px);
   margin: 0;
 }
+
+/* Rendered-Markdown dialog body (code review, suggested code) */
+.harness-dialog .harness-md {
+  min-width: 36em;
+  max-width: 62vw;
+  max-height: 62vh;
+  overflow: auto;
+  padding-right: 8px;
+}
+.harness-dialog .harness-md table {
+  border-collapse: collapse;
+}
+.harness-dialog .harness-md th,
+.harness-dialog .harness-md td {
+  border: 1px solid var(--jp-border-color2);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+/* Side chat panel */
+.harness-chat {
+  min-width: 300px;
+}
+.harness-chat-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.harness-chat-log {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 8px;
+}
+.harness-chat-input {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--jp-border-color2);
+}
+.harness-chat-input textarea {
+  flex: 1 1 auto;
+  resize: vertical;
+  font-family: var(--jp-ui-font-family);
+  font-size: var(--jp-ui-font-size1);
+  padding: 4px 6px;
+}
+.harness-msg {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: var(--jp-ui-font-size1);
+  word-break: break-word;
+}
+.harness-user {
+  background: var(--jp-brand-color3);
+  white-space: pre-wrap;
+}
+.harness-assistant {
+  background: var(--jp-layout-color2);
+}
+.harness-assistant > *:first-child {
+  margin-top: 0;
+}
+.harness-assistant > *:last-child {
+  margin-bottom: 0;
+}

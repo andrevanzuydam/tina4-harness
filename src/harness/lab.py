@@ -135,6 +135,13 @@ def _fix(code: str, instruction: str) -> str:
     return _code(_generate(messages, 800))
 
 
+def _chat(messages: list) -> str:
+    system = {"role": "system", "content":
+              "You are a concise, helpful coding and ideation assistant inside a Jupyter notebook. "
+              "Keep answers short and practical. Use Markdown; put code in fenced ``` blocks."}
+    return _strip_think(_generate([system] + list(messages), 700))
+
+
 def harness_edit(kind: str, b64: str) -> str:
     """Entry point the extension calls. Returns a single ``__HARNESS__{json}`` line to stdout."""
     try:
@@ -145,6 +152,8 @@ def harness_edit(kind: str, b64: str) -> str:
             text = _check(data["code"])
         elif kind == "fix":
             text = _fix(data["code"], data["instruction"])
+        elif kind == "chat":
+            text = _chat(data["messages"])
         else:
             raise ValueError(f"unknown action '{kind}'")
         return "__HARNESS__" + json.dumps({"text": text})
