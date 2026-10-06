@@ -25,6 +25,7 @@ _FENCE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
 _lock = threading.Lock()
 _model = None
 _pool: ThreadPoolExecutor | None = None
+_vision_fallback = None
 
 
 def _threads() -> int:
@@ -200,12 +201,8 @@ def _chat(messages: list, context: str = "") -> str:
     return _tidy_chat(reply, as_tool="tool" in last_user.lower())
 
 
-_vision_model = None
-
-
 def _vision(image: str, question: str) -> str:
-    """Answer a question about an image using the vision model (loaded once, lazily)."""
-    global _vision_model
+    """Answer a question about an image — using the SAME model as text (Qwen3.8-2B-Distill is a VLM)."""
     from pathlib import Path
 
     path = Path(image)
@@ -213,12 +210,17 @@ def _vision(image: str, question: str) -> str:
         path = Path.cwd() / image      # the kernel's cwd is the notebook folder
     if not path.is_file():
         return f"Could not find the image at {path}."
-    if _vision_model is None:
-        from .vision import VisionModel
 
-        _vision_model = VisionModel()
+    model = get_model()
+    prompt = question or "Describe this image."
     with _lock:
-        return _vision_model.describe(str(path), question or "Describe this image.", max_tokens=512)
+        if hasattr(model, "describe"):          # the MLX model does text AND vision
+            return model.describe(str(path), prompt, max_tokens=512)
+        from .vision import VisionModel          # torch fallback
+        global _vision_fallback
+        if _vision_fallback is None:
+            _vision_fallback = VisionModel()
+        return _vision_fallback.describe(str(path), prompt, max_tokens=512)
 
 
 def _chat_file(key: str):

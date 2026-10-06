@@ -1,12 +1,10 @@
 """Vision — let the model *read an image*.
 
-Qwen3.8-2B-Distill is vision-capable (it ships an image processor and vision tokens), so the
-same small model that runs the text harness can also look at a picture. The text path uses
-``mlx_lm``; the vision path needs the image processor, so it goes through **mlx-vlm** on Apple
-Silicon (and transformers' image-text-to-text class on Windows/Linux).
-
-This loads a *second* copy of the weights (~1 GB) because the two loaders are different — fine on
-an M3 Max, but that is why vision is its own optional helper rather than folded into every run.
+Qwen3.8-2B-Distill is vision-capable, and on Apple Silicon the MLX backend already does text AND
+images through one mlx-vlm model — so the harness (and the notebook's §12) just call
+``model.describe(path, question)`` with no second copy. This standalone ``VisionModel`` is kept
+for the **torch** path (Windows / Linux) and as a fallback; on MLX prefer the backend's own
+``describe``.
 
     from harness.vision import VisionModel
     vision = VisionModel()

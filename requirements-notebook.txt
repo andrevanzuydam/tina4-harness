@@ -8,14 +8,14 @@ nbconvert>=7
 huggingface_hub>=0.23
 tina4-groundwire>=0.1
 
-# Apple Silicon (M-series) → MLX (fast, Metal GPU, tiny 4-bit weights)
-mlx-lm>=0.32 ; sys_platform == "darwin" and platform_machine == "arm64"
+# Apple Silicon (M-series) → MLX via mlx-vlm: ONE model does both text and images
+# (pulls in mlx-lm). Qwen3.8-2B-Distill is a vision-language model, so this is the whole MLX path.
+mlx-vlm>=0.1 ; sys_platform == "darwin" and platform_machine == "arm64"
 
 # Everything else (Windows, Linux, Intel Mac, CPU or NVIDIA CUDA) → PyTorch + transformers
 torch>=2.2 ; not (sys_platform == "darwin" and platform_machine == "arm64")
 transformers>=4.44 ; not (sys_platform == "darwin" and platform_machine == "arm64")
 psutil>=5.9 ; not (sys_platform == "darwin" and platform_machine == "arm64")
 
-# Vision (reading images) — Qwen3.8-2B-Distill is vision-capable
+# Reading images (both backends)
 Pillow>=10
-mlx-vlm>=0.1 ; sys_platform == "darwin" and platform_machine == "arm64"
