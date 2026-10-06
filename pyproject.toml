@@ -1,0 +1,18 @@
+[project]
+name = "tina4-harness"
+version = "0.1.0"
+description = "A Tina4 Python project"
+requires-python = ">=3.12"
+dependencies = [
+    "tina4-python>=3.1.0",
+]
+
+# Database drivers are optional — install only what you need:
+#   uv add psycopg2-binary   # PostgreSQL
+#   uv add mysql-connector-python  # MySQL
+#   uv add pymssql            # MSSQL
+#   uv add firebird-driver    # Firebird
+#   uv add pymongo            # MongoDB
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
