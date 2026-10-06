@@ -462,6 +462,7 @@ class ChatPanel extends Widget {
   private _input: HTMLTextAreaElement;
   private _send: HTMLButtonElement;
   private _ctxLabel: HTMLSpanElement;
+  private _lastPanel: NotebookPanel | null = null;
   private _lastSel: { cell: Cell; from: number; to: number } | null = null;
   private _histories = new Map<string, { role: string; content: string }[]>();
   private _currentKey = '';
@@ -528,7 +529,12 @@ class ChatPanel extends Widget {
     if (shell.currentChanged && shell.currentChanged.connect) {
       shell.currentChanged.connect(() => void this._syncContext());
     }
-    this.tracker.currentChanged.connect(() => void this._syncContext());
+    this.tracker.currentChanged.connect(() => {
+      if (this.tracker.currentWidget) {
+        this._lastPanel = this.tracker.currentWidget; // remember a notebook for its kernel
+      }
+      void this._syncContext();
+    });
 
     this._currentKey = '';
     this._histories.set('', []);
@@ -942,6 +948,25 @@ class ChatPanel extends Widget {
     return bubble;
   }
 
+  /** A notebook to borrow a kernel from: the focused one, else the last-used, else ANY open one.
+   *  Lets the chat work while an editor or the App Preview tab is focused. */
+  private _panel(): NotebookPanel | null {
+    if (this.tracker.currentWidget) {
+      return this.tracker.currentWidget;
+    }
+    if (this._lastPanel && !this._lastPanel.isDisposed) {
+      return this._lastPanel;
+    }
+    let found: NotebookPanel | null = null;
+    this.tracker.forEach(p => {
+      if (!found && !p.isDisposed) {
+        found = p;
+      }
+    });
+    this._lastPanel = found;
+    return found;
+  }
+
   private async _submit(): Promise<void> {
     const text = this._input.value.trim();
     if (!text) {
@@ -949,7 +974,7 @@ class ChatPanel extends Widget {
     }
     this._input.value = '';
 
-    const panel = this.tracker.currentWidget;
+    const panel = this._panel();
 
     // If an image document is the active tab, chat ABOUT the image (vision model).
     const imagePath = this._currentImagePath();
