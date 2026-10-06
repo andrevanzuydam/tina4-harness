@@ -91,6 +91,52 @@ def _strip_think(text: str) -> str:
     return _THINK.sub("", text).strip()
 
 
+def _repo_root() -> Path:
+    if _indexed_path is None:
+        raise RuntimeError("Open a repo first with open_repo(url).")
+    return Path(_indexed_path)
+
+
+def list_files(pattern: str = "*.py", limit: int = 40) -> list[str]:
+    """List files in the open repo matching a glob (relative paths), e.g. '*.py' or '**/*.md'."""
+    root = _repo_root()
+    hits = []
+    for f in root.rglob(pattern):
+        if f.is_file() and not (_SKIP_DIRS & set(f.parts)):
+            hits.append(str(f.relative_to(root)))
+            if len(hits) >= limit:
+                break
+    return sorted(hits)
+
+
+def read_file(rel_path: str) -> str:
+    """Read one file from the open repo by its relative path."""
+    f = _repo_root() / rel_path
+    if not f.is_file():
+        matches = [p for p in _repo_root().rglob("*") if p.is_file() and p.name == rel_path]
+        if matches:
+            f = matches[0]
+    if not f.is_file():
+        return f"ERROR: {rel_path} not found in the repo."
+    return f.read_text(encoding="utf-8", errors="ignore")
+
+
+def explain_file(rel_path: str, model=None, max_tokens: int = 700) -> str:
+    """Read one file and explain its logic — what it does, the key parts, and how it flows."""
+    code = read_file(rel_path)
+    if code.startswith("ERROR:"):
+        return code
+    model = model or load_model()
+    messages = [
+        {"role": "system", "content":
+            "Explain this Python file for a learner. Cover: (1) what it does in one line, (2) the "
+            "key functions/classes and what each does, (3) how the logic flows step by step, and "
+            "(4) anything notable or a possible bug. Be clear and concrete; short paragraphs or bullets."},
+        {"role": "user", "content": f"File: {rel_path}\n```python\n{code[:6000]}\n```"},
+    ]
+    return _strip_think(model.generate(messages, max_tokens=max_tokens))
+
+
 def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400) -> str:
     """Answer a question about the cloned codebase, grounded in the retrieved code."""
     if _index is None:

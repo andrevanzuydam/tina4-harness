@@ -29,7 +29,14 @@ from pathlib import Path
 from .download import PROJECT_ROOT
 from .model import load_model
 from .pyhelp import ask_python  # grounded Python Q&A, available after `from harness.agent import *`
-from .repo import ask_repo, open_repo, search_repo  # clone & explore a git repo with RAG
+from .repo import (  # clone & explore a git repo with RAG
+    ask_repo,
+    explain_file,
+    list_files,
+    open_repo,
+    read_file as read_repo_file,
+    search_repo,
+)
 
 WORKSPACE = PROJECT_ROOT / "workspace"
 TOOLS: dict = {}
@@ -128,6 +135,16 @@ def search_code(query: str) -> str:
     except Exception as exc:
         return f"ERROR: {exc}"
     return "\n\n".join(t[:600] for t, _s in hits) or "no matches"
+
+
+@tool
+def review_file(path: str) -> str:
+    "Read one file from the cloned repo and explain its logic (and any bug). args: path"
+    from . import repo
+    try:
+        return repo.explain_file(path, max_tokens=700)
+    except Exception as exc:
+        return f"ERROR: {exc}"
 
 
 @tool
