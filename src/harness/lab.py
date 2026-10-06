@@ -356,8 +356,31 @@ def _strip_redefs_in_reply(reply: str, existing: set) -> str:
     return reply[: m.start()] + "```python\n" + cleaned + "\n```" + reply[m.end():]
 
 
+_GIT_URL = re.compile(r"(git@[\w.-]+:[\w./-]+?\.git|https?://[\w.-]+/[\w./-]+?(?:\.git)?)(?=\s|$)")
+
+
 def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "", intent: str = "code") -> str:
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+
+    # "clone <git url>" → actually clone + index it with the harness (not just print a command).
+    if re.search(r"\b(clone|open|load|index)\b", last_user, re.I):
+        gm = _GIT_URL.search(last_user)
+        if gm and ("git@" in gm.group(1) or "github.com" in gm.group(1) or gm.group(1).endswith(".git")):
+            url = gm.group(1)
+            _status("⬇️ cloning the repo…")
+            try:
+                from . import repo
+
+                dest, n = repo.open_repo(url)
+                _status("📚 indexing the code…")
+                return (f"Cloned and indexed **{dest.name}** — {n} files. Now you can ask about the "
+                        f"code, search it, or review a file, e.g.\n\n```python\n"
+                        f"from harness.repo import ask_repo, list_files, explain_file\n"
+                        f"list_files('*.py')\n"
+                        f"print(explain_file('Factorial.py'))\n```")
+            except Exception as exc:
+                return f"Could not clone that repo: {exc}"
+
     # Known non-Python syntax (??, &&, ||, ===) in the code being fixed → fix it deterministically,
     # no model guessing. This is always correct, which matters for beginners.
     if intent == "code" and context.strip():
