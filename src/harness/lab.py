@@ -35,27 +35,42 @@ def _threads() -> int:
 
 
 def get_model():
-    """The notebook's `model` if present, else one we load now (and share back to the notebook)."""
+    """Reuse an already-loaded model (demo via agent.setup(), or a teaching notebook's `model`),
+    else load one now. Validates it is a real model (has .generate), not e.g. agent.model()."""
     global _model
+
+    # 1) The packaged agent's model (clean demo notebooks call agent.setup()).
+    try:
+        from . import agent
+
+        if getattr(agent, "_model", None) is not None:
+            _model = agent._model
+            return _model
+    except Exception:
+        pass
+
+    # 2) A model instance in the notebook namespace (teaching notebook: `model = load_model()`).
+    ip = None
     try:
         from IPython import get_ipython
 
         ip = get_ipython()
         if ip is not None:
             existing = ip.user_ns.get("model")
-            if existing is not None:
+            if existing is not None and hasattr(existing, "generate"):
                 _model = existing
                 return _model
     except Exception:
         ip = None
 
+    # 3) Load one ourselves and share it back.
     if _model is None:
         from harness import load_model
 
         _model = load_model()
         try:
-            if ip is not None and "model" not in ip.user_ns:
-                ip.user_ns["model"] = _model  # let notebook cells use the same instance
+            if ip is not None and not hasattr(ip.user_ns.get("model"), "generate"):
+                ip.user_ns["harness_model"] = _model
         except Exception:
             pass
     return _model

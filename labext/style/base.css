@@ -83,3 +83,31 @@
 .harness-assistant > *:last-child {
   margin-bottom: 0;
 }
+.harness-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  align-items: center;
+}
+.harness-pill {
+  border: 1px solid var(--jp-brand-color1);
+  color: var(--jp-brand-color1);
+  background: transparent;
+  border-radius: 999px;
+  padding: 2px 12px;
+  font-size: var(--jp-ui-font-size0);
+  cursor: pointer;
+}
+.harness-pill:hover:not(:disabled) {
+  background: var(--jp-brand-color1);
+  color: var(--jp-ui-inverse-font-color1);
+}
+.harness-pill:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.harness-pill-done {
+  font-size: var(--jp-ui-font-size0);
+  color: var(--jp-success-color1);
+}

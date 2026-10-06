@@ -176,13 +176,20 @@ function insertBelowWithSource(panel: NotebookPanel, source: string): Cell {
   return cell;
 }
 
-/** Append a new code cell at the end of the notebook and run it. */
-async function appendAndRun(panel: NotebookPanel, source: string): Promise<void> {
+/** Append a new code cell at the end of the notebook. */
+function appendCell(panel: NotebookPanel, source: string): Cell {
   const nb = panel.content;
   nb.activeCellIndex = nb.widgets.length - 1;
   NotebookActions.insertBelow(nb);
-  nb.activeCell!.model.sharedModel.setSource(source);
-  await NotebookActions.run(nb, panel.sessionContext);
+  const cell = nb.activeCell!;
+  cell.model.sharedModel.setSource(source);
+  return cell;
+}
+
+/** Append a new code cell at the end of the notebook and run it. */
+async function appendAndRun(panel: NotebookPanel, source: string): Promise<void> {
+  appendCell(panel, source);
+  await NotebookActions.run(panel.content, panel.sessionContext);
 }
 
 /** Remove any stray ``` fence lines so an inserted cell is pure code. */
@@ -248,7 +255,47 @@ class ChatPanel extends Widget {
         void this._submit();
       }
     });
-    void this._append('assistant', 'Hi! I run on this notebook’s local model. Ask me to ideate or draft code — then use **Create Cell** to drop it in.');
+    void this._append('assistant', 'Hi! I run on this notebook’s local model. Ask me to draft a tool or some code — I’ll show it with buttons to **Insert**, **Insert & run**, or **Replace** your selection. Highlight code first and I’ll know what “this” means.');
+  }
+
+  /** Show generated code with action pills instead of auto-inserting it. */
+  private async _offerCode(
+    panel: NotebookPanel,
+    code: string,
+    sel: { cell: Cell; from: number; to: number } | null
+  ): Promise<void> {
+    const bubble = document.createElement('div');
+    bubble.className = 'harness-msg harness-assistant';
+    const r = this.rendermime.createRenderer('text/markdown');
+    await r.renderModel(this.rendermime.createModel({ data: { 'text/markdown': '```python\n' + code + '\n```' }, trusted: true }));
+    bubble.appendChild(r.node);
+
+    const pills = document.createElement('div');
+    pills.className = 'harness-pills';
+    const addPill = (label: string, action: () => Promise<void> | void): void => {
+      const b = document.createElement('button');
+      b.className = 'harness-pill';
+      b.textContent = label;
+      b.onclick = async () => {
+        pills.querySelectorAll('button').forEach(x => ((x as HTMLButtonElement).disabled = true));
+        await action();
+        const done = document.createElement('span');
+        done.className = 'harness-pill-done';
+        done.textContent = '✓ ' + label;
+        pills.appendChild(done);
+        this._log.scrollTop = this._log.scrollHeight;
+      };
+      pills.appendChild(b);
+    };
+
+    addPill('Insert & run', () => appendAndRun(panel, code));
+    addPill('Insert', () => void appendCell(panel, code));
+    if (sel) {
+      addPill('Replace selection', () => sel.cell.model.sharedModel.updateSource(sel.from, sel.to, code));
+    }
+    bubble.appendChild(pills);
+    this._log.appendChild(bubble);
+    this._log.scrollTop = this._log.scrollHeight;
   }
 
   private async _append(role: string, content: string): Promise<HTMLElement> {
@@ -283,11 +330,13 @@ class ChatPanel extends Widget {
 
     // If you've highlighted code in a cell, send it as context so "this"/"it" is understood.
     let context = '';
+    let sel: { cell: Cell; from: number; to: number } | null = null;
     const cell = panel.content.activeCell;
     if (cell) {
       const { from, to, scope } = selectionOf(cell);
       if (scope === 'selection') {
         context = cell.model.sharedModel.getSource().slice(from, to);
+        sel = { cell, from, to };
       }
     }
 
@@ -300,20 +349,15 @@ class ChatPanel extends Widget {
       const reply = await kernelEdit(panel, 'chat', { messages: this._messages, context });
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
-      // The chat targets the notebook: code goes into cells, not the chat bubble.
+      // Code is offered with action pills (Insert / Insert & run / Replace) — not auto-run.
       const { prose, blocks } = splitCode(reply);
       if (prose) {
         await this._append('assistant', prose);
       }
       for (const code of blocks) {
-        await appendAndRun(panel, code);
+        await this._offerCode(panel, code, sel);
       }
-      if (blocks.length) {
-        await this._append(
-          'assistant',
-          `➕ added and ran ${blocks.length} cell${blocks.length > 1 ? 's' : ''} in the notebook.`
-        );
-      } else if (!prose) {
+      if (!prose && !blocks.length) {
         await this._append('assistant', '(no reply)');
       }
     } catch (e: any) {
