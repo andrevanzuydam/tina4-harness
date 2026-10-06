@@ -92,14 +92,23 @@ def _executor() -> ThreadPoolExecutor:
     return _pool
 
 
-def _locked_generate(model, messages, max_tokens):
+def _stream(chunk: str) -> None:
+    """Emit a generation delta the chat renders live (base64 so newlines survive)."""
+    try:
+        print("__HSTREAM__" + base64.b64encode(chunk.encode("utf-8")).decode(), flush=True)
+    except Exception:
+        pass
+
+
+def _locked_generate(model, messages, max_tokens, on_text=None):
     with _lock:  # one generation at a time on the single local model
-        return model.generate(messages, max_tokens=max_tokens)
+        return model.generate(messages, max_tokens=max_tokens, on_text=on_text)
 
 
-def _generate(messages, max_tokens=700) -> str:
+def _generate(messages, max_tokens=700, stream: bool = False) -> str:
     model = get_model()
-    return _executor().submit(_locked_generate, model, messages, max_tokens).result()
+    on_text = _stream if stream else None
+    return _executor().submit(_locked_generate, model, messages, max_tokens, on_text).result()
 
 
 def _strip_think(text: str) -> str:
@@ -451,7 +460,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         used += c
     recent.reverse()
     _status("💭 thinking…")
-    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, 4096))
+    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, 4096, stream=True))
     if intent == "code":
         _status("🔎 checking syntax…")
     if intent == "ask":

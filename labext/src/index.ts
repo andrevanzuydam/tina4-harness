@@ -37,7 +37,8 @@ async function kernelEdit(
   panel: NotebookPanel,
   kind: string,
   payload: Record<string, unknown>,
-  onStatus?: (s: string) => void
+  onStatus?: (s: string) => void,
+  onStream?: (delta: string) => void
 ): Promise<string> {
   const kernel = panel.sessionContext.session?.kernel;
   if (!kernel) {
@@ -55,10 +56,16 @@ async function kernelEdit(
     const t = msg.header.msg_type;
     if (t === 'stream' && msg.content.name === 'stdout') {
       const text = msg.content.text as string;
-      if (onStatus) {
-        for (const ln of text.split('\n')) {
-          if (ln.startsWith('__HSTATUS__')) {
+      for (const ln of text.split('\n')) {
+        if (ln.startsWith('__HSTATUS__')) {
+          if (onStatus) {
             onStatus(ln.slice('__HSTATUS__'.length).trim());
+          }
+        } else if (ln.startsWith('__HSTREAM__') && onStream) {
+          try {
+            onStream(decodeURIComponent(escape(window.atob(ln.slice('__HSTREAM__'.length).trim()))));
+          } catch {
+            /* ignore a partial/garbled chunk */
           }
         }
       }
@@ -895,6 +902,7 @@ class ChatPanel extends Widget {
 
     this._send.disabled = true;
     const pending = await this._append('assistant', '…');
+    let streamed = '';
     try {
       const reply = await kernelEdit(
         panel,
@@ -908,6 +916,14 @@ class ChatPanel extends Widget {
         },
         (s: string) => {
           pending.textContent = s;
+        },
+        (delta: string) => {
+          streamed += delta;
+          const shown = streamed.includes('</think>')
+            ? (streamed.split('</think>').pop() as string)
+            : streamed.replace('<think>', '');
+          pending.textContent = shown.trim().slice(-1400);
+          this._log.scrollTop = this._log.scrollHeight;
         }
       );
       this._messages.push({ role: 'assistant', content: reply });
