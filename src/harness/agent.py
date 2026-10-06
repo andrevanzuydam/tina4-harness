@@ -218,6 +218,7 @@ def run_agent(task: str, max_steps: int = 6, verbose: bool = True):
         raise RuntimeError("Call setup() first.")
     messages = [{"role": "system", "content": build_system()}, {"role": "user", "content": task}]
     last = None
+    last_result = None  # once a tool gives us something, we can finish with it
     for step in range(1, max_steps + 1):
         reply = _model.generate(messages)
         thinking, name, args = parse_action(reply)
@@ -226,27 +227,38 @@ def run_agent(task: str, max_steps: int = 6, verbose: bool = True):
             print(f"\n── STEP {step} " + "─" * 46)
             if thinking:
                 print("🧠", textwrap.shorten(thinking, 200))
-        if name is None:
-            messages.append({"role": "user", "content": 'Reply with ONE fenced json action.'})
-            continue
+
         if name == "final_answer":
+            answer = args.get("answer", last_result or "")
             if verbose:
-                print("✅", args.get("answer", ""))
-            return args.get("answer", "")
-        sig = (name, json.dumps(args, sort_keys=True))
-        if sig == last:
-            messages.append({"role": "user", "content": f"You already ran {name}. Use the result or call final_answer."})
+                print("✅", answer)
+            return answer
+
+        # No action, or a repeat of the last call: if we already have a result, finish with it.
+        sig = (name, json.dumps(args, sort_keys=True)) if name else None
+        if name is None or sig == last:
+            if last_result is not None:
+                if verbose:
+                    print("✅ (final answer from the last result)", last_result)
+                return last_result
+            messages.append({"role": "user", "content":
+                             'Reply with ONE fenced json action, e.g. {"tool":"final_answer","args":{"answer":"..."}}.'})
             continue
         last = sig
+
         try:
             result = TOOLS[name](**args) if name in TOOLS else f"ERROR: no tool '{name}'"
         except Exception as exc:
             result = f"ERROR: {name} failed: {exc}"
+        last_result = result
         if verbose:
             print(f"🔧 {name}({args})")
             print("📤", textwrap.shorten(str(result), 200))
-        messages.append({"role": "user", "content": f"Result of {name}:\n{result}"})
-    return None
+        # Strongly steer toward finishing now that there is a result.
+        messages.append({"role": "user", "content":
+                         f"Result of {name}: {result}\nIf this answers the task, reply ONLY with "
+                         f'{{"tool":"final_answer","args":{{"answer":"{result}"}}}}.'})
+    return last_result
 
 
 def model():

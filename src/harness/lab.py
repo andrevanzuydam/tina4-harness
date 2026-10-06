@@ -133,12 +133,19 @@ def _create(prompt: str) -> str:
     return _codegen(messages, 4096)
 
 
-def _check(code: str) -> str:
+def _check(code: str, notebook_code: str = "") -> str:
+    ctx = ""
+    if notebook_code:
+        ctx = ("\n\nThese names are ALREADY DEFINED elsewhere in the notebook (harness helpers such "
+               "as @tool, tool, run_agent) — treat them as valid and defined; do NOT claim they are "
+               "undefined or 'not valid Python':\n```python\n" + notebook_code[-2000:] + "\n```")
     messages = [
         {"role": "system", "content":
-            "You are a concise code reviewer. List at most 5 DISTINCT issues as short bullet points. "
-            "Do NOT repeat the same point. Plain text only, no code fences."},
-        {"role": "user", "content": f"Review this code:\n```\n{code}\n```"},
+            "You are a concise Python code reviewer. List at most 5 DISTINCT real issues as short "
+            "bullets. Valid Python (decorators, function calls, comprehensions) is runnable — never "
+            "call it 'not runnable' or 'not valid Python'. Assume names defined elsewhere exist. "
+            "Plain text only, no code fences."},
+        {"role": "user", "content": f"Review this code:\n```\n{code}\n```" + ctx},
     ]
     _status("🔎 reviewing the code…")
     review = _strip_think(_generate(messages, 1536))
@@ -510,7 +517,7 @@ def harness_edit(kind: str, b64: str) -> str:
         if kind == "create":
             text = _create(data["prompt"])
         elif kind == "check":
-            text = _check(data["code"])
+            text = _check(data["code"], data.get("notebook", ""))
         elif kind == "fix":
             text = _fix(data["code"], data["instruction"])
         elif kind == "chat":

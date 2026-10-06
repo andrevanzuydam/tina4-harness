@@ -341,6 +341,21 @@ function findRevisionTarget(panel: NotebookPanel, code: string): Cell | null {
   return null;
 }
 
+/** The notebook's existing code (so a reviewer/model knows what's already defined). */
+function collectNotebookCode(panel: NotebookPanel): string {
+  const out: string[] = [];
+  for (const c of panel.content.widgets) {
+    if (c.model.type === 'code') {
+      const s = c.model.sharedModel.getSource().trim();
+      if (s) {
+        out.push(s);
+      }
+    }
+  }
+  const code = out.join('\n\n');
+  return code.length > 4000 ? code.slice(-4000) : code;
+}
+
 /** Put code into the blank active cell if there is one, else append a new cell. */
 function placeCode(panel: NotebookPanel, source: string): { cell: Cell; created: boolean } {
   const active = panel.content.activeCell;
@@ -962,7 +977,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         const code = cell.model.sharedModel.getSource();
         const id = Notification.emit('Harness: checking code…', 'in-progress');
         try {
-          const review = await kernelEdit(panel, 'check', { code });
+          const review = await kernelEdit(panel, 'check', { code, notebook: collectNotebookCode(panel) });
           Notification.dismiss(id);
           // Show the review AND an editable copy of the cell — Apply writes it back and runs.
           const edited = await editCodeDialog(rendermime, 'Code review — edit & apply', code, review);
