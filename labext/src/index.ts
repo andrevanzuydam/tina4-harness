@@ -445,6 +445,60 @@ function stripFences(code: string): string {
 // Reply prefix (from harness.lab) that means: insert the code block straight into a new cell.
 const INSERT_SENTINEL = '@@HARNESS_INSERT@@\n';
 
+/** Drop prose that is only a heading/label with no real content (e.g. "Explanation of the fix:",
+ *  "Output:") — those render as big blank headers next to a code cell and say nothing. */
+function meaningfulProse(prose: string): string {
+  const stripped = prose
+    .replace(/^#{1,6}\s*/gm, '') // markdown headings -> plain
+    .replace(/\*\*/g, '')
+    .trim();
+  if (!stripped) {
+    return '';
+  }
+  // A single short line that's just a label (ends with ':' or is a known filler) is not useful.
+  const lines = stripped.split('\n').map(l => l.trim()).filter(Boolean);
+  if (lines.length === 1) {
+    const only = lines[0];
+    if (/[:：]$/.test(only) || only.length < 4) {
+      return '';
+    }
+    if (/^(explanation( of the (fix|code))?|output|result|here('?s)?( the)?( code| fix)?|code|solution|note|summary)\s*[:：]?$/i.test(only)) {
+      return '';
+    }
+  }
+  return prose.trim();
+}
+
+/** A short, human description of what a code block does, for the action note. */
+function describeCode(code: string): string {
+  const m1 = code.match(/^\s*print\s*\(\s*([A-Za-z_]\w*)\s*\(/m);
+  if (m1) {
+    return `called ${m1[1]}()`;
+  }
+  const m2 = code.match(/^\s*([A-Za-z_][\w.]*)\s*\(/m);
+  if (m2 && !/^(print|len|range|list|dict|set|str|int|float|open)$/.test(m2[1])) {
+    return `called ${m2[1]}()`;
+  }
+  const defs = [...code.matchAll(/^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/gm)];
+  if (defs.length === 1) {
+    const name = defs[0][1];
+    const params = defs[0][2]
+      .split(',')
+      .map(s => s.split(':')[0].split('=')[0].trim())
+      .filter(p => p && p !== 'self')
+      .join(', ');
+    return `wrote ${name}(${params})`;
+  }
+  if (defs.length > 1) {
+    return `wrote ${defs.map(d => d[1]).join(', ')}`;
+  }
+  const cls = code.match(/^\s*class\s+([A-Za-z_]\w*)/m);
+  if (cls) {
+    return `defined class ${cls[1]}`;
+  }
+  return '';
+}
+
 function splitCode(md: string): { prose: string; blocks: string[] } {
   const blocks: string[] = [];
   const prose = md
@@ -799,11 +853,12 @@ class ChatPanel extends Widget {
     bubble.className = 'harness-msg harness-assistant';
     const note = document.createElement('div');
     note.className = 'harness-codenote';
-    const ran = readsInput ? ' — run it yourself and type your answer in the prompt.' : ' and ran it.';
+    const cellNo = panel.content.widgets.indexOf(cell) + 1; // 1-based for humans
+    const what = describeCode(code);
+    const did = mode === 'replaced' ? 'Updated' : mode === 'created' ? 'Added' : 'Filled';
+    const ran = readsInput ? ' — run it and type your answer in the prompt.' : ' and ran it.';
     note.textContent =
-      mode === 'replaced' ? `✓ Updated the existing cell${ran}`
-      : mode === 'created' ? `✓ Added a cell${ran}`
-      : `✓ Filled the blank cell${ran}`;
+      `✓ ${did} cell ${cellNo}` + (what ? ` — ${what}` : '') + ran;
     bubble.appendChild(note);
 
     const pills = document.createElement('div');
@@ -1097,7 +1152,7 @@ class ChatPanel extends Widget {
           const cell = insertBelowWithSource(panel, code);
           panel.content.activeCellIndex = panel.content.widgets.indexOf(cell);
         }
-        await this._append('assistant', prose || 'Loaded into a cell.');
+        await this._append('assistant', meaningfulProse(prose) || 'Loaded into a cell.');
         this._save();
         this._send.disabled = false;
         return;
@@ -1107,8 +1162,9 @@ class ChatPanel extends Widget {
         await this._append('assistant', reply || '(no reply)');
       } else {
         const { prose, blocks } = splitCode(reply);
-        if (prose) {
-          await this._append('assistant', prose);
+        const mp = meaningfulProse(prose);
+        if (mp) {
+          await this._append('assistant', mp);
         }
         for (const code of blocks) {
           if (mode === 'fix') {
@@ -1117,7 +1173,7 @@ class ChatPanel extends Widget {
             await this._offerCode(panel, code, sel, false);
           }
         }
-        if (!prose && !blocks.length) {
+        if (!mp && !blocks.length) {
           await this._append('assistant', '(no reply)');
         }
       }
