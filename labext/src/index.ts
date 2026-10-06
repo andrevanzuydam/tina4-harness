@@ -176,6 +176,36 @@ function insertBelowWithSource(panel: NotebookPanel, source: string): Cell {
   return cell;
 }
 
+/** Append a new code cell at the end of the notebook and run it. */
+async function appendAndRun(panel: NotebookPanel, source: string): Promise<void> {
+  const nb = panel.content;
+  nb.activeCellIndex = nb.widgets.length - 1;
+  NotebookActions.insertBelow(nb);
+  nb.activeCell!.model.sharedModel.setSource(source);
+  await NotebookActions.run(nb, panel.sessionContext);
+}
+
+/** Remove any stray ``` fence lines so an inserted cell is pure code. */
+function stripFences(code: string): string {
+  return code
+    .split('\n')
+    .filter(line => !line.trim().startsWith('```'))
+    .join('\n')
+    .trim();
+}
+
+/** Split a Markdown reply into prose and its fenced code blocks (code has no fences). */
+function splitCode(md: string): { prose: string; blocks: string[] } {
+  const blocks: string[] = [];
+  const prose = md
+    .replace(/```[a-zA-Z0-9_+-]*\n?([\s\S]*?)```/g, (_m, code: string) => {
+      blocks.push(stripFences(code));
+      return '';
+    })
+    .trim();
+  return { prose, blocks };
+}
+
 /** A side-panel chat with the notebook's local model — for ideating and drafting. */
 class ChatPanel extends Widget {
   private _log: HTMLDivElement;
@@ -242,21 +272,50 @@ class ChatPanel extends Widget {
       return;
     }
     this._input.value = '';
-    this._messages.push({ role: 'user', content: text });
-    await this._append('user', text);
 
     const panel = this.tracker.currentWidget;
     if (!panel) {
+      this._messages.push({ role: 'user', content: text });
+      await this._append('user', text);
       await this._append('assistant', 'Open a notebook first — I use its kernel.');
       return;
     }
+
+    // If you've highlighted code in a cell, send it as context so "this"/"it" is understood.
+    let context = '';
+    const cell = panel.content.activeCell;
+    if (cell) {
+      const { from, to, scope } = selectionOf(cell);
+      if (scope === 'selection') {
+        context = cell.model.sharedModel.getSource().slice(from, to);
+      }
+    }
+
+    this._messages.push({ role: 'user', content: text });
+    await this._append('user', text + (context ? '\n\n↳ (with your selection)' : ''));
+
     this._send.disabled = true;
     const pending = await this._append('assistant', '…');
     try {
-      const reply = await kernelEdit(panel, 'chat', { messages: this._messages });
+      const reply = await kernelEdit(panel, 'chat', { messages: this._messages, context });
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
-      await this._append('assistant', reply);
+      // The chat targets the notebook: code goes into cells, not the chat bubble.
+      const { prose, blocks } = splitCode(reply);
+      if (prose) {
+        await this._append('assistant', prose);
+      }
+      for (const code of blocks) {
+        await appendAndRun(panel, code);
+      }
+      if (blocks.length) {
+        await this._append(
+          'assistant',
+          `➕ added and ran ${blocks.length} cell${blocks.length > 1 ? 's' : ''} in the notebook.`
+        );
+      } else if (!prose) {
+        await this._append('assistant', '(no reply)');
+      }
     } catch (e: any) {
       pending.remove();
       await this._append('assistant', 'Error: ' + e.message);
@@ -399,6 +458,32 @@ const plugin: JupyterFrontEndPlugin<void> = {
         palette.addItem({ command, category: 'Harness' })
       );
     }
+
+    // ---- Auto-run the hidden setup for clean demo notebooks ---------------
+    // A notebook with metadata {"harness": {"autostart": true}} runs its cells tagged
+    // "startup" once, when it opens — so the demo surface starts ready, with setup hidden.
+    const started = new WeakSet<NotebookPanel>();
+    tracker.widgetAdded.connect((_s, panel) => {
+      void panel.sessionContext.ready.then(async () => {
+        if (started.has(panel)) {
+          return;
+        }
+        const model: any = panel.content.model;
+        const meta = model?.getMetadata ? model.getMetadata('harness') : undefined;
+        if (!meta || !meta.autostart) {
+          return;
+        }
+        started.add(panel);
+        const nb = panel.content;
+        for (let i = 0; i < nb.widgets.length; i++) {
+          const tags = (nb.widgets[i].model.getMetadata('tags') as string[]) || [];
+          if (tags.includes('startup')) {
+            nb.activeCellIndex = i;
+            await NotebookActions.run(nb, panel.sessionContext);
+          }
+        }
+      });
+    });
 
     console.log('tina4-harness-lab activated: right-click a cell for Check / Create / Fix.');
   }

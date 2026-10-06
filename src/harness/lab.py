@@ -20,7 +20,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-_FENCE = re.compile(r"```[a-zA-Z0-9]*\n(.*?)```", re.DOTALL)
+_FENCE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
 
 _lock = threading.Lock()
 _model = None
@@ -90,7 +90,11 @@ def _strip_think(text: str) -> str:
 def _code(text: str) -> str:
     text = _strip_think(text)
     match = _FENCE.search(text)
-    return (match.group(1) if match else text).strip()
+    if match:
+        return match.group(1).strip()
+    # No clean fenced block — drop any stray ``` fence lines so the cell is pure code.
+    lines = [ln for ln in text.strip().splitlines() if not ln.strip().startswith("```")]
+    return "\n".join(lines).strip()
 
 
 # --- the three actions ---------------------------------------------------------------
@@ -135,11 +139,50 @@ def _fix(code: str, instruction: str) -> str:
     return _code(_generate(messages, 800))
 
 
-def _chat(messages: list) -> str:
-    system = {"role": "system", "content":
-              "You are a concise, helpful coding and ideation assistant inside a Jupyter notebook. "
-              "Keep answers short and practical. Use Markdown; put code in fenced ``` blocks."}
-    return _strip_think(_generate([system] + list(messages), 700))
+_CHAT_SYSTEM = (
+    "You are an assistant driving a live JupyterLab notebook that runs a local agent 'harness'. "
+    "Code you write is inserted and run as a NEW NOTEBOOK CELL automatically.\n\n"
+    "RULES:\n"
+    "- Reply with AT MOST ONE ```python code block, and one short sentence of prose. Never repeat "
+    "the code in words. For pure ideation, use no code block.\n"
+    "- To add a TOOL, ONLY define a function decorated with @tool whose one-line docstring ends "
+    "with 'args: <names>' and which returns a string. Do NOT call run_agent yourself — the user "
+    "does that. Example:\n"
+    "```python\n@tool\ndef shout(text: str) -> str:\n    \"Uppercase some text. args: text\"\n"
+    "    return text.upper()\n```\n"
+    "- run_agent(task) takes ONE natural-language task string, e.g. run_agent(\"shout 'hi'\")."
+)
+
+
+def _tidy_chat(reply: str, as_tool: bool) -> str:
+    """Keep a chat reply notebook-friendly: at most one clean ```python block, one line of prose.
+    Drops REPL (>>> / ...) example lines, and adds @tool when the user asked for a tool."""
+    blocks = [m.group(1).strip() for m in _FENCE.finditer(reply)]
+    prose = _FENCE.sub("", reply).strip()
+    if not blocks:
+        return reply
+    code = "\n".join(
+        ln for ln in blocks[0].splitlines()
+        if not ln.strip().startswith(">>>") and not ln.strip().startswith("...")
+    ).strip()
+    if as_tool and code.startswith("def ") and "@tool" not in code:
+        code = "@tool\n" + code
+    first_line = prose.splitlines()[0].strip() if prose else ""
+    head = (first_line + "\n\n") if first_line else ""
+    return head + "```python\n" + code + "\n```"
+
+
+def _chat(messages: list, context: str = "") -> str:
+    # Qwen's template allows only ONE system message, so fold the selection context into it.
+    system_text = _CHAT_SYSTEM
+    if context:
+        system_text += (
+            "\n\nThe user has SELECTED this code in the notebook; when they say 'this', 'it', or "
+            "'the selection', they mean it:\n```python\n" + context + "\n```"
+        )
+    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + list(messages), 700))
+    last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+    return _tidy_chat(reply, as_tool="tool" in last_user.lower())
 
 
 def harness_edit(kind: str, b64: str) -> str:
@@ -153,7 +196,7 @@ def harness_edit(kind: str, b64: str) -> str:
         elif kind == "fix":
             text = _fix(data["code"], data["instruction"])
         elif kind == "chat":
-            text = _chat(data["messages"])
+            text = _chat(data["messages"], data.get("context", ""))
         else:
             raise ValueError(f"unknown action '{kind}'")
         return "__HARNESS__" + json.dumps({"text": text})
