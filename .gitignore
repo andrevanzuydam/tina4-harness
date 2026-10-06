@@ -25,3 +25,6 @@ notebooks/uploaded.png
 
 # local chat context
 .tina4/
+
+# cloned repos for exploration
+repos/

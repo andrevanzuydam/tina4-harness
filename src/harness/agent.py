@@ -29,6 +29,7 @@ from pathlib import Path
 from .download import PROJECT_ROOT
 from .model import load_model
 from .pyhelp import ask_python  # grounded Python Q&A, available after `from harness.agent import *`
+from .repo import ask_repo, open_repo, search_repo  # clone & explore a git repo with RAG
 
 WORKSPACE = PROJECT_ROOT / "workspace"
 TOOLS: dict = {}
@@ -116,6 +117,17 @@ def python_help(query: str) -> str:
     from . import pyhelp
     hits = pyhelp.search(query, k=3)
     return "\n\n".join(text[:700] for text, _s in hits) or "no matching docs"
+
+
+@tool
+def search_code(query: str) -> str:
+    "Search the cloned repository's code (open a repo first with open_repo). args: query"
+    from . import repo
+    try:
+        hits = repo.search_repo(query, k=3)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    return "\n\n".join(t[:600] for t, _s in hits) or "no matches"
 
 
 @tool
