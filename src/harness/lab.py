@@ -156,17 +156,19 @@ def _fix(code: str, instruction: str) -> str:
 
 
 _CHAT_SYSTEM = (
-    "You are an assistant driving a live JupyterLab notebook that runs a local agent 'harness'. "
-    "Code you write is inserted and run as a NEW NOTEBOOK CELL automatically.\n\n"
+    "You are a PYTHON coding assistant in a live JupyterLab notebook. ASSUME every question is about "
+    "Python and Python coding unless the user clearly says otherwise — e.g. 'antigravity' means the "
+    "Python module (`import antigravity`), not anything else. Code you write is inserted and run as a "
+    "NEW NOTEBOOK CELL automatically.\n\n"
     "RULES:\n"
-    "- Reply with AT MOST ONE ```python code block, and one short sentence of prose. Never repeat "
-    "the code in words. For pure ideation, use no code block.\n"
-    "- To add a TOOL, ONLY define a function decorated with @tool whose one-line docstring ends "
-    "with 'args: <names>' and which returns a string. Do NOT call run_agent yourself — the user "
-    "does that. Example:\n"
+    "- Reply with AT MOST ONE ```python code block plus one short sentence of prose. ALWAYS write the "
+    "real, complete, runnable code — NEVER a placeholder like '[your code here]' or '[complete solution]'.\n"
+    "- To add a TOOL, define a function decorated with @tool whose one-line docstring ends with "
+    "'args: <names>' and returns a string; do NOT call run_agent yourself. Example:\n"
     "```python\n@tool\ndef shout(text: str) -> str:\n    \"Uppercase some text. args: text\"\n"
     "    return text.upper()\n```\n"
-    "- run_agent(task) takes ONE natural-language task string, e.g. run_agent(\"shout 'hi'\")."
+    "- For a 'what is / how do I' question, answer briefly in Python terms, using the documentation "
+    "context below if given."
 )
 
 
@@ -189,16 +191,44 @@ def _tidy_chat(reply: str, as_tool: bool) -> str:
 
 
 def _chat(messages: list, context: str = "") -> str:
-    # Qwen's template allows only ONE system message, so fold the selection context into it.
+    last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+    # Qwen's template allows only ONE system message, so fold everything into it.
     system_text = _CHAT_SYSTEM
     if context:
         system_text += (
             "\n\nThe user has SELECTED this code in the notebook; when they say 'this', 'it', or "
             "'the selection', they mean it:\n```python\n" + context + "\n```"
         )
-    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + list(messages), 900))
-    last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+    if _looks_like_question(last_user):  # ground factual Python questions in the stdlib docs
+        try:
+            from . import pyhelp
+
+            docs = "\n\n".join(t[:600] for t, _s in pyhelp.search(last_user, k=2))
+            if docs:
+                system_text += "\n\nRelevant Python documentation (use if helpful, ignore if not):\n" + docs
+        except Exception:
+            pass
+    # Context budget: default ~128K tokens (≈ 512K chars). The model supports up to 256K; a 2B is
+    # sharpest with less, so keep only as much recent history as fits. Tune with HARNESS_CONTEXT_CHARS.
+    budget = int(os.environ.get("HARNESS_CONTEXT_CHARS", str(512_000)))
+    recent: list = []
+    used = 0
+    for m in reversed(messages):
+        c = len(m.get("content", ""))
+        if recent and used + c > budget:
+            break
+        recent.append(m)
+        used += c
+    recent.reverse()
+    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, 900))
     return _tidy_chat(reply, as_tool="tool" in last_user.lower())
+
+
+def _looks_like_question(text: str) -> bool:
+    t = text.lower().strip()
+    return ("?" in t) or t.startswith(
+        ("what", "how", "why", "which", "when", "where", "explain", "is ", "does ", "can ", "tell me")
+    )
 
 
 def _vision(image: str, question: str) -> str:

@@ -210,6 +210,28 @@ function deleteCellWidget(panel: NotebookPanel, cell: Cell): void {
   }
 }
 
+/** Create a brand-new notebook, write the code into its first cell, and run it. */
+async function newNotebookWithCode(app: JupyterFrontEnd, code: string): Promise<void> {
+  const created: any = await app.commands.execute('docmanager:new-untitled', { type: 'notebook' });
+  const widget: any = await app.commands.execute('docmanager:open', { path: created.path });
+  await widget.context.ready;
+  try {
+    await widget.sessionContext.ready;
+  } catch {
+    /* kernel may still be starting */
+  }
+  const nb = widget.content;
+  nb.activeCellIndex = 0;
+  if (nb.activeCell) {
+    nb.activeCell.model.sharedModel.setSource(code);
+  }
+  try {
+    await NotebookActions.run(nb, widget.sessionContext);
+  } catch {
+    /* leave it unrun if the kernel isn't ready */
+  }
+}
+
 /** Put code into the blank active cell if there is one, else append a new cell. */
 function placeCode(panel: NotebookPanel, source: string): { cell: Cell; created: boolean } {
   const active = panel.content.activeCell;
@@ -442,6 +464,10 @@ class ChatPanel extends Widget {
       pills.appendChild(b);
     };
 
+    addPill('New notebook', async () => {
+      undo();
+      await newNotebookWithCode(this.app, code);
+    });
     addPill('Undo', () => undo());
     if (sel) {
       addPill('Put in selection instead', () => {

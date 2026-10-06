@@ -22,6 +22,13 @@ from .download import PROJECT_ROOT
 HELP_FILE = PROJECT_ROOT / "data" / "python-help.txt"
 _docs = None  # cached Groundwire index for this session
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+# Importing these for pydoc has side effects (antigravity opens a browser; this prints the Zen),
+# so we describe them from a short note instead of importing them.
+_SKIP = {
+    "antigravity": "antigravity — the Python easter egg: `import antigravity` opens the xkcd comic "
+                   "353 (https://xkcd.com/353/) in your web browser. It also defines a geohash() function.",
+    "this": "this — the Python easter egg: `import this` prints 'The Zen of Python' by Tim Peters.",
+}
 
 
 def build_help(path: Path | str = HELP_FILE, max_modules: int | None = None, rebuild: bool = False) -> Path:
@@ -44,6 +51,9 @@ def build_help(path: Path | str = HELP_FILE, max_modules: int | None = None, reb
         except Exception:
             pass
     for name in names:
+        if name in _SKIP:
+            parts.append(f"\n\n===== MODULE: {name} =====\n{_SKIP[name]}")  # avoid import side effects
+            continue
         try:
             parts.append(f"\n\n===== MODULE: {name} =====\n" + pydoc.render_doc(name, renderer=pydoc.plaintext))
         except Exception:
