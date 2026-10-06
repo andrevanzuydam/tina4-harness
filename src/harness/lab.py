@@ -511,9 +511,44 @@ def _with_referenced(open_files: str) -> str:
     return open_files
 
 
+def _detect_tina4(open_files: str):
+    """Automatically tell whether we're working inside a Tina4 project — from the paths of the OPEN
+    files (and the kernel's cwd). Returns the project Path, or None. No toggle: it just knows."""
+    try:
+        from . import tina4
+    except Exception:
+        return None
+    from pathlib import Path
+
+    def _walk_up(start: Path):
+        """Nearest enclosing Tina4 project, stopping at the first repo (.git) boundary so one
+        repo's files never resolve into a DIFFERENT enclosing project (e.g. the harness repo)."""
+        d = start.resolve()
+        for _ in range(12):
+            if tina4.is_project(d):
+                return d
+            if (d / ".git").exists():  # repo boundary — a cloned repo here is not the harness
+                return None
+            if d.parent == d:
+                return None
+            d = d.parent
+        return None
+
+    # tina4 mode comes ONLY from the file you're working on being inside a Tina4 project.
+    for rel in re.findall(r"# ===== (.+?) =====", open_files or ""):
+        rel = rel.split("  (")[0].strip()  # drop a "(referenced…)" suffix
+        p = Path(rel)
+        cand = p if p.is_absolute() else (Path.cwd() / rel)
+        proj = _walk_up(cand.parent if cand.suffix else cand)
+        if proj is not None:
+            return proj
+    return None
+
+
 def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "",
           intent: str = "code", open_files: str = "") -> str:
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+    tina4_project = _detect_tina4(open_files)
 
     # An open file may import/reference LOCAL modules that aren't open — pull those in too, so the
     # answer can follow the code's own dependencies.
@@ -570,6 +605,18 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             return "Rewrote the non-Python syntax to valid Python:\n\n```python\n" + det.strip() + "\n```"
     # Qwen's template allows only ONE system message, so fold everything into it.
     system_text = _CHAT_SYSTEM
+    # Working inside a Tina4 project? Ground the model in Tina4 paradigms automatically — no toggle.
+    if tina4_project is not None:
+        try:
+            from . import tina4
+
+            _status(f"🟢 Tina4 project: {tina4_project.name}")
+            system_text += "\n\n" + tina4.PARADIGMS
+            docs = tina4.ask_tina4(last_user, cwd=tina4_project)
+            if docs:
+                system_text += "\n\nRelevant Tina4 documentation:\n" + docs[:1500]
+        except Exception:
+            pass
     if intent == "ask":
         system_text += (
             "\n\nThis is a QUESTION, not a build request. EXPLAIN clearly in a few sentences; show at "

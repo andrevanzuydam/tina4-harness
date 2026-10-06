@@ -604,7 +604,9 @@ class ChatPanel extends Widget {
     }
     for (const w of it as any) {
       try {
-        const name: string = w.title?.label || w.context?.path || w.id || 'untitled';
+        // Prefer the full document path (e.g. "tina4app/src/routes/home.py") so the kernel can tell
+        // when an open file lives inside a Tina4 project and switch paradigms automatically.
+        const name: string = w.context?.path || w.title?.label || w.id || 'untitled';
         // A plain file editor (FileEditor): text lives on its editor/model shared model.
         const ed = w.content?.editor || w.content;
         const fem = ed?.model?.sharedModel || w.content?.model?.sharedModel;
