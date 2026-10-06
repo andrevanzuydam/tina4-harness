@@ -482,6 +482,7 @@ class ChatPanel extends Widget {
       pills.appendChild(b);
     };
 
+    addPill('Copy', () => void navigator.clipboard.writeText(code));
     addPill('New notebook', async () => {
       undo();
       await newNotebookWithCode(this.app, code);
@@ -508,6 +509,17 @@ class ChatPanel extends Widget {
     } else {
       bubble.textContent = content;
     }
+    // A small copy button on every message.
+    const copy = document.createElement('button');
+    copy.className = 'harness-copy';
+    copy.title = 'Copy';
+    copy.textContent = '⧉';
+    copy.onclick = () => {
+      void navigator.clipboard.writeText(content);
+      copy.textContent = '✓';
+      setTimeout(() => (copy.textContent = '⧉'), 1200);
+    };
+    bubble.appendChild(copy);
     this._log.appendChild(bubble);
     this._log.scrollTop = this._log.scrollHeight;
     return bubble;

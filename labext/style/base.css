@@ -93,12 +93,33 @@
   padding: 4px 6px;
 }
 .harness-msg {
+  position: relative;
   margin: 6px 0;
   padding: 6px 10px;
   border-radius: 8px;
   font-size: var(--jp-ui-font-size1);
   word-break: break-word;
   overflow-wrap: anywhere;
+}
+.harness-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  border: none;
+  background: transparent;
+  color: var(--jp-ui-font-color3);
+  cursor: pointer;
+  font-size: var(--jp-ui-font-size1);
+  line-height: 1;
+  padding: 2px 4px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.harness-msg:hover .harness-copy {
+  opacity: 1;
+}
+.harness-copy:hover {
+  color: var(--jp-ui-font-color1);
 }
 .harness-msg pre,
 .harness-msg code {
