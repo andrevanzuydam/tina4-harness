@@ -195,7 +195,7 @@ def _chat(messages: list, context: str = "") -> str:
             "\n\nThe user has SELECTED this code in the notebook; when they say 'this', 'it', or "
             "'the selection', they mean it:\n```python\n" + context + "\n```"
         )
-    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + list(messages), 700))
+    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + list(messages), 900))
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
     return _tidy_chat(reply, as_tool="tool" in last_user.lower())
 
@@ -217,8 +217,9 @@ def _vision(image: str, question: str) -> str:
         from .vision import VisionModel
 
         _vision_model = VisionModel()
+    prompt = (question or "Describe this image.") + " Answer in a few sentences."
     with _lock:
-        return _vision_model.describe(str(path), question or "Describe this image.", max_tokens=256)
+        return _vision_model.describe(str(path), prompt, max_tokens=512)
 
 
 def harness_edit(kind: str, b64: str) -> str:
