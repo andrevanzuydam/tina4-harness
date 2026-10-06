@@ -605,6 +605,15 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             return "Rewrote the non-Python syntax to valid Python:\n\n```python\n" + det.strip() + "\n```"
     # Qwen's template allows only ONE system message, so fold everything into it.
     system_text = _CHAT_SYSTEM
+    # Give the model the real "now" so time-related code/answers aren't hallucinated dates.
+    from datetime import datetime
+
+    system_text += (
+        f"\n\nThe current date and time (the user's 'now') is "
+        f"{datetime.now().astimezone().isoformat(timespec='seconds')}. Use it when the request "
+        "involves the current time/date; prefer computing it in code (e.g. datetime.now()) over "
+        "hardcoding a literal."
+    )
     # Working inside a Tina4 project? Ground the model in Tina4 paradigms automatically — no toggle.
     if tina4_project is not None:
         try:
