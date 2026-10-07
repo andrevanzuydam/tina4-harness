@@ -557,8 +557,12 @@ class ChatPanel extends Widget {
   private _log: HTMLDivElement;
   private _input: HTMLTextAreaElement;
   private _send: HTMLButtonElement;
+  private _stop: HTMLButtonElement;
+  private _thinkBtn: HTMLButtonElement;
+  private _thinkMode: 'full' | 'brief' | 'off' = 'brief';
   private _ctxLabel: HTMLSpanElement;
   private _lastPanel: NotebookPanel | null = null;
+  private _busyPanel: NotebookPanel | null = null;
   private _lastSel: { cell: Cell; from: number; to: number } | null = null;
   private _histories = new Map<string, { role: string; content: string }[]>();
   private _currentKey = '';
@@ -584,12 +588,20 @@ class ChatPanel extends Widget {
     header.className = 'harness-chat-header';
     this._ctxLabel = document.createElement('span');
     this._ctxLabel.className = 'harness-chat-ctx';
+    // Thinking toggle: cycles Full → Brief → Off. Controls the model's reasoning phase and
+    // caps reply length, so answers stay short instead of rambling.
+    this._thinkBtn = document.createElement('button');
+    this._thinkBtn.className = 'harness-chat-think';
+    this._thinkBtn.title = 'Thinking depth — click to cycle Full / Brief / Off';
+    this._thinkBtn.onclick = () => this._cycleThink();
+    this._renderThinkBtn();
     const clear = document.createElement('button');
     clear.className = 'harness-chat-clear';
     clear.textContent = 'Clear';
     clear.title = 'Clear this conversation';
     clear.onclick = () => this._clear();
     header.appendChild(this._ctxLabel);
+    header.appendChild(this._thinkBtn);
     header.appendChild(clear);
 
     this._log = document.createElement('div');
@@ -602,8 +614,16 @@ class ChatPanel extends Widget {
     this._send = document.createElement('button');
     this._send.textContent = 'Send';
     this._send.className = 'jp-mod-styled jp-mod-accept';
+    // Stop: interrupts the running generation (hidden until one is in flight).
+    this._stop = document.createElement('button');
+    this._stop.textContent = 'Stop';
+    this._stop.className = 'jp-mod-styled jp-mod-reject harness-chat-stop';
+    this._stop.title = 'Stop the current generation';
+    this._stop.style.display = 'none';
+    this._stop.onclick = () => this._stopGeneration();
     row.appendChild(this._input);
     row.appendChild(this._send);
+    row.appendChild(this._stop);
     wrap.appendChild(header);
     wrap.appendChild(this._log);
     wrap.appendChild(row);
@@ -1159,6 +1179,8 @@ class ChatPanel extends Widget {
     await this._appendContextPreview(context, output);  // show what the agent is given
 
     this._send.disabled = true;
+    this._stop.style.display = '';
+    this._busyPanel = panel;
     const pending = await this._append('assistant', '…');
     let streamed = '';
     try {
@@ -1172,7 +1194,8 @@ class ChatPanel extends Widget {
           open_files: this._openFiles(panel),
           preview_urls: openPreviewUrls(this.app),
           output,
-          intent: mode === 'ask' ? 'ask' : 'code'
+          intent: mode === 'ask' ? 'ask' : 'code',
+          think: this._thinkMode
         },
         (s: string) => {
           pending.textContent = s;
@@ -1251,7 +1274,35 @@ class ChatPanel extends Widget {
       await this._append('assistant', 'Error: ' + e.message);
     } finally {
       this._send.disabled = false;
+      this._stop.style.display = 'none';
+      this._busyPanel = null;
     }
+  }
+
+  private _renderThinkBtn(): void {
+    const label = { full: 'Think: Full', brief: 'Think: Brief', off: 'Think: Off' }[this._thinkMode];
+    this._thinkBtn.textContent = label;
+    this._thinkBtn.dataset.mode = this._thinkMode;
+  }
+
+  private _cycleThink(): void {
+    const order: Array<'full' | 'brief' | 'off'> = ['full', 'brief', 'off'];
+    this._thinkMode = order[(order.indexOf(this._thinkMode) + 1) % order.length];
+    this._renderThinkBtn();
+  }
+
+  /** Stop the running generation by interrupting the kernel (lab.py returns the partial text). */
+  private _stopGeneration(): void {
+    const kernel = this._busyPanel?.sessionContext.session?.kernel;
+    if (kernel) {
+      void kernel.interrupt().catch(() => undefined);
+    }
+    this._stop.disabled = true;
+    this._stop.textContent = 'Stopping…';
+    window.setTimeout(() => {
+      this._stop.disabled = false;
+      this._stop.textContent = 'Stop';
+    }, 1500);
   }
 }
 

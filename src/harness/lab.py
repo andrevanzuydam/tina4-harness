@@ -100,15 +100,42 @@ def _stream(chunk: str) -> None:
         pass
 
 
-def _locked_generate(model, messages, max_tokens, on_text=None):
+def _locked_generate(model, messages, max_tokens, on_text=None, enable_thinking=True):
     with _lock:  # one generation at a time on the single local model
-        return model.generate(messages, max_tokens=max_tokens, on_text=on_text)
+        return model.generate(
+            messages, max_tokens=max_tokens, on_text=on_text, enable_thinking=enable_thinking
+        )
 
 
-def _generate(messages, max_tokens=700, stream: bool = False) -> str:
+# Set when the last generation was interrupted (Stop button → kernel interrupt), so the chat
+# flow can skip its retry instead of launching a second generation.
+_stopped = False
+
+
+def _generate(messages, max_tokens=700, stream: bool = False, enable_thinking: bool = True) -> str:
+    """Generate, honouring a mid-run kernel interrupt (Stop button) by ending early.
+
+    The Stop button interrupts the kernel; that raises KeyboardInterrupt in this (main) thread
+    while the generation runs in the pool. We ask the model to stop, then collect the partial
+    text the worker produced so far.
+    """
+    global _stopped
+    _stopped = False
     model = get_model()
     on_text = _stream if stream else None
-    return _executor().submit(_locked_generate, model, messages, max_tokens, on_text).result()
+    fut = _executor().submit(_locked_generate, model, messages, max_tokens, on_text, enable_thinking)
+    try:
+        return fut.result()
+    except KeyboardInterrupt:
+        _stopped = True
+        try:
+            model.request_stop()
+        except Exception:
+            pass
+        try:
+            return fut.result()  # completes quickly now, with whatever was generated
+        except Exception:
+            return ""
 
 
 def _strip_think(text: str) -> str:
@@ -751,8 +778,19 @@ def _tina4_write(project, text: str, messages: list) -> str:
     return f"{_WROTE_SENTINEL}|{project}|{url}\n{note}\n\n```python\n{route.strip()}\n```"
 
 
+# Thinking modes: (enable_thinking, max_tokens). "full" keeps the reasoning + room; "brief"
+# still reasons but stays short; "off" skips the <think> phase entirely for fast, terse replies.
+_THINK_MODES = {
+    "full": (True, 4096),
+    "brief": (True, 768),
+    "off": (False, 512),
+}
+
+
 def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "",
-          intent: str = "code", open_files: str = "", preview_urls: list | None = None) -> str:
+          intent: str = "code", open_files: str = "", preview_urls: list | None = None,
+          think: str = "full") -> str:
+    enable_thinking, chat_cap = _THINK_MODES.get(think, _THINK_MODES["full"])
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
     tina4_project = _detect_tina4(open_files, last_user, preview_urls or [])
 
@@ -940,7 +978,8 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         used += c
     recent.reverse()
     _status("💭 thinking…")
-    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, 4096, stream=True))
+    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, chat_cap,
+                                    stream=True, enable_thinking=enable_thinking))
     if intent == "code":
         _status("🔎 checking syntax…")
     if intent == "ask":
@@ -951,7 +990,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     if m:
         bad_placeholder = _is_placeholder(m.group(1))
         ok, err = _valid_python(m.group(1))
-        if bad_placeholder or not ok:
+        if (bad_placeholder or not ok) and not _stopped:
             _status("↻ fixing the code…")
             why = "it was a placeholder" if bad_placeholder else f"it had a syntax error: {err}"
             retry = recent + [
@@ -959,7 +998,8 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 {"role": "user", "content": f"That is not acceptable ({why}). {_py_hint(m.group(1))}. "
                                             "Return ONLY the actual, complete, valid Python code."},
             ]
-            reply2 = _strip_think(_generate([{"role": "system", "content": system_text}] + retry, 4096))
+            reply2 = _strip_think(_generate([{"role": "system", "content": system_text}] + retry, chat_cap,
+                                            enable_thinking=enable_thinking))
             tidied2 = _tidy_chat(reply2, as_tool="tool" in last_user.lower())
             m2 = _FENCE.search(tidied2)
             if m2 and not _is_placeholder(m2.group(1)) and _valid_python(m2.group(1))[0]:
@@ -1050,7 +1090,7 @@ def harness_edit(kind: str, b64: str) -> str:
             text = _chat(
                 data["messages"], data.get("context", ""), data.get("notebook", ""),
                 data.get("output", ""), data.get("intent", "code"), data.get("open_files", ""),
-                data.get("preview_urls", []),
+                data.get("preview_urls", []), data.get("think", "full"),
             )
         elif kind == "vision":
             text = _vision(data["image"], data.get("question", ""))

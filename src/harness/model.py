@@ -68,13 +68,22 @@ class HarnessModel:
         on_text: Callable[[str], None] | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        enable_thinking: bool = True,
     ) -> str:
         """Return the next assistant message for ``messages`` (a list of {role, content}).
 
         If ``on_text`` is given, it is called with each streamed chunk so a notebook can
-        print the model thinking in real time.
+        print the model thinking in real time. ``enable_thinking`` toggles the model's
+        reasoning phase via its chat template (False = terse, no ``<think>`` block).
         """
         raise NotImplementedError
+
+    def request_stop(self) -> None:
+        """Ask an in-flight ``generate`` to stop early and return what it has so far.
+
+        Safe to call from another thread (e.g. on a kernel interrupt). Backends that cannot
+        interrupt mid-generation may treat this as a no-op.
+        """
 
     # --- telemetry --------------------------------------------------------------------
     def memory(self) -> dict:
