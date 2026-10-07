@@ -477,12 +477,18 @@ def _example_call(name: str, params: list, text: str) -> str:
     raw = _strip_think(_generate([{"role": "system", "content": sys},
                                   {"role": "user", "content": text}], 120)).strip()
     for ln in [l.strip().strip("`") for l in raw.splitlines()]:
-        if (name + "(") in ln and "def " not in ln:
-            try:
-                compile(ln, "<e>", "exec")
-                return ln
-            except Exception:
-                break
+        if "def " in ln or (name + "(") not in ln:
+            continue
+        # Must actually SHOW output: a print(...) or a bare call expression (Jupyter displays it).
+        # Reject an assignment like `result = add(3, 5)` — it runs but prints nothing.
+        shows = ln.startswith("print(") or re.match(r"^" + re.escape(name) + r"\s*\(", ln)
+        if not shows:
+            continue
+        try:
+            compile(ln, "<e>", "exec")
+            return ln
+        except Exception:
+            break
     args = [a for k, p in enumerate(params) if (a := _simple_arg(p, k)) is not None]
     return f"print({name}({', '.join(args)}))"
 
@@ -491,27 +497,38 @@ def _maybe_example(last_user: str, notebook_code: str, open_files: str, messages
     """'make me an example' / 'how do I call X' / 'use X' about a function that EXISTS in the
     notebook → build a NEW cell that calls it (and runs it). 'Ask one short question' when the
     intent clearly wants an example but no function can be identified."""
-    wants = bool(
-        re.search(r"\b(example|usage|demo|how\s+(do|to|can)\s+\w*\s*\w*\s*(use|call|run)|call|invoke|exercise|use)\b",
-                  last_user, re.I)
-    )
-    if not wants:
+    # A request to WRITE/CREATE a new thing is NEVER an example of an existing function. This also
+    # stops an incidental word (e.g. "the char to use for drawing") from hijacking a create request.
+    if re.search(r"\b(write|create|make|build|implement|generat\w*|draw|design|code)\b.*\b"
+                 r"(method|function|class|script|program|tool|route|page|def|algorithm|tree|game|app)\b",
+                 last_user, re.I):
         return None
+
     pool = (notebook_code or "") + "\n" + (open_files or "")
     funcs = _functions_in(pool)
     order = [n for n, _ in funcs]
     funcmap = {n: p for n, p in funcs}
     real = [n for n in order if n not in ("main", "call")]  # candidates to disambiguate over
-    target = next((n for n in funcmap if re.search(r"\b" + re.escape(n) + r"\b", last_user)), None)
-    if target is None:
+
+    named = next((n for n in funcmap if re.search(r"\b" + re.escape(n) + r"\b", last_user)), None)
+    # Verb that, with a named function, clearly means "demonstrate this one".
+    verb_on_named = bool(re.search(r"\b(use|call|run|invoke|try|example|demo)\b", last_user, re.I))
+    # Phrasing that clearly asks for an example even without naming a function.
+    explicit = bool(re.search(r"\b(example|usage|demo|how\s+(do|to|can)\b.*\b(use|call|run)|invoke)\b",
+                              last_user, re.I))
+
+    target = None
+    if named and verb_on_named:
+        target = named                            # "use add" / "call add" / "example of add"
+    elif explicit:
         if re.search(r"\b(it|this|that|the (function|method|code))\b", last_user, re.I) and real:
             target = real[-1]                     # anaphora → the most recently defined
         elif len(real) == 1:
-            target = real[0]                      # only one candidate → it's obvious
+            target = real[0]                      # only one candidate → obvious
     if target is None:
-        if real:  # wants an example but which? ask ONE short question (per "ask when unsure")
+        if explicit and real:  # clearly wants an example but which? ask ONE short question
             return f"Which function should I write an example for? I can see: {', '.join(real[:6])}."
-        return None  # no functions in context → let normal handling take it
+        return None  # not an example request → let normal handling take it
     call = _example_call(target, funcmap[target], last_user)
     note = f"Example calling `{target}`:"
     return f"{_RUN_SENTINEL}{note}\n\n```python\n{call}\n```"

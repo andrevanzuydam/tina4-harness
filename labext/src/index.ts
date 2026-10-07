@@ -807,26 +807,6 @@ class ChatPanel extends Widget {
   }
 
   /** Show, as a muted block, the selection and/or error the agent is being given. */
-  private async _appendContextPreview(selection: string, output: string): Promise<void> {
-    const parts: string[] = [];
-    if (selection && selection.trim()) {
-      parts.push('**agent sees — selection:**\n```python\n' + selection.slice(0, 600) + '\n```');
-    }
-    if (output && /error|traceback/i.test(output)) {
-      parts.push('**agent sees — cell error:**\n```\n' + output.slice(-600) + '\n```');
-    }
-    if (!parts.length) {
-      return;
-    }
-    const bubble = document.createElement('div');
-    bubble.className = 'harness-msg harness-context';
-    const r = this.rendermime.createRenderer('text/markdown');
-    await r.renderModel(this.rendermime.createModel({ data: { 'text/markdown': parts.join('\n\n') }, trusted: true }));
-    bubble.appendChild(r.node);
-    this._log.appendChild(bubble);
-    this._log.scrollTop = this._log.scrollHeight;
-  }
-
   /** Remember the cell selection at the moment the chat input is reached for. */
   private _snapshotSelection(): void {
     const cell = this.tracker.currentWidget?.content.activeCell;
@@ -1164,7 +1144,12 @@ class ChatPanel extends Widget {
 
     this._messages.push({ role: 'user', content: text });
     await this._append('user', text);
-    await this._appendContextPreview(context, output);  // show what the agent is given
+    // A terse note of what it's looking at — not a dump of the code.
+    const ctxCell: Cell | null = sel ? sel.cell : active;
+    if (context && context.trim() && ctxCell) {
+      const n = panel.content.widgets.indexOf(ctxCell) + 1;
+      await this._append('context', `Taking a look at Cell ${n}${hasError ? ' — fixing the error' : ''}`);
+    }
 
     this._send.disabled = true;
     const pending = await this._append('assistant', '…');
