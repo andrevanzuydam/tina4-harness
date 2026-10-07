@@ -492,11 +492,21 @@ const APP_SENTINEL = '@@HARNESS_APP@@';
 /** Drop prose that is only a heading/label with no real content (e.g. "Explanation of the fix:",
  *  "Output:") — those render as big blank headers next to a code cell and say nothing. */
 function meaningfulProse(prose: string): string {
-  // Drop every line that is just a heading/label with no content on it (a bold/heading line ending
-  // in ':', or a known filler), keeping only lines that actually say something. If nothing real is
-  // left, return '' so the chat shows no empty header at all.
+  // Drop prose lines that are just a heading/label with no content (ending in ':', or a known
+  // filler), keeping lines that actually say something. CODE INSIDE ``` FENCES IS NEVER TOUCHED —
+  // a line like `def f():`, `if x:`, or a docstring `Args:` must survive verbatim.
   const kept: string[] = [];
+  let inFence = false;
   for (const raw of prose.split('\n')) {
+    if (/^\s*```/.test(raw)) {
+      inFence = !inFence;
+      kept.push(raw);
+      continue;
+    }
+    if (inFence) {
+      kept.push(raw); // preserve code exactly (indentation and all)
+      continue;
+    }
     const line = raw.trim();
     if (!line) {
       continue;
