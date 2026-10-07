@@ -1136,17 +1136,17 @@ class ChatPanel extends Widget {
       : hasError && !isQuestion ? 'fix'
       : 'ask';
 
-    // ALWAYS give the model the active cell's code (if nothing is selected) so it never has to
-    // ask "what code?" — it has the code and the error in front of it.
-    if (!context && active) {
+    // Attach the active cell's code ONLY when the request is about existing code (fix/ask/error) —
+    // NOT for a 'create' request to write something new, where it just distracts the model.
+    if (!context && active && mode !== 'create') {
       context = active.model.sharedModel.getSource();
     }
 
     this._messages.push({ role: 'user', content: text });
     await this._append('user', text);
-    // A terse note of what it's looking at — not a dump of the code.
+    // A terse note of what it's looking at — only when it's actually working on an existing cell.
     const ctxCell: Cell | null = sel ? sel.cell : active;
-    if (context && context.trim() && ctxCell) {
+    if (ctxCell && context && context.trim() && (sel || mode === 'fix' || hasError)) {
       const n = panel.content.widgets.indexOf(ctxCell) + 1;
       await this._append('context', `Taking a look at Cell ${n}${hasError ? ' — fixing the error' : ''}`);
     }
