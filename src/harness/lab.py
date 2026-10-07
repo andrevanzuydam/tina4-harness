@@ -302,22 +302,22 @@ def _is_placeholder(code: str) -> bool:
 
 
 def _strip_script_scaffold(code: str) -> str:
-    """Make generated code safe to drop in a cell: remove the `if __name__ == "__main__":` block
-    (and any trailing bare `main()` call) so running the cell can't kick off an interactive script
-    that blocks on input(). Function/class definitions and example CALLS are kept."""
+    """Make generated code safe to drop in a cell WITHOUT losing examples. Only remove the
+    `if __name__ == "__main__":` block when it would actually hang the cell (it reads input());
+    a harmless demo (e.g. `if __name__ == "__main__": draw_tree("*")`) is KEPT — in a notebook
+    __name__ is "__main__", so it runs and shows the example. Also drop a trailing bare `main()`
+    call only when main() itself reads input()."""
+    has_input = "input(" in code  # a program that reads stdin would hang on auto-run
     lines = code.splitlines()
-    out = []
-    i = 0
-    while i < len(lines):
-        ln = lines[i]
-        if re.match(r"\s*if\s+__name__\s*==\s*['\"]__main__['\"]\s*:", ln):
-            break  # drop this block and everything after it
-        out.append(ln)
-        i += 1
-    # Drop a trailing bare `main()` / `main( )` call left at top level (it would run on cell exec).
-    while out and re.match(r"\s*main\s*\(\s*\)\s*$", out[-1]):
-        out.pop()
-    return "\n".join(out).strip() or code.strip()
+    if has_input:
+        for k, ln in enumerate(lines):
+            if re.match(r"\s*if\s+__name__\s*==\s*['\"]__main__['\"]\s*:", ln):
+                lines = lines[:k]  # drop the interactive entry point and everything after it
+                break
+        # No __main__ wrapper: drop a trailing bare main() that would run on cell exec.
+        while lines and re.match(r"\s*main\s*\(\s*\)\s*$", lines[-1]):
+            lines.pop()
+    return "\n".join(lines).strip() or code.strip()
 
 
 def _tidy_chat(reply: str, as_tool: bool) -> str:
