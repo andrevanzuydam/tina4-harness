@@ -77,7 +77,8 @@ def ensure_model(
 
     dst.mkdir(parents=True, exist_ok=True)
     if progress:
-        print(f"↓ Fetching {repo_id} into {dst} (first run only)…", flush=True)
+        # Plain ASCII: a Unicode arrow/ellipsis crashes on Windows consoles (cp1252 stdout).
+        print(f"Downloading {repo_id} into {dst} (first run only)...", flush=True)
 
     # local_dir writes real files into our folder. Older hub versions understand the
     # symlink toggle; newer ones copy by default — try the explicit form, fall back cleanly.

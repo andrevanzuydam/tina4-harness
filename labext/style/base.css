@@ -89,6 +89,30 @@
 .harness-chat-clear:hover {
   background: var(--jp-layout-color2);
 }
+.harness-chat-think {
+  flex: 0 0 auto;
+  border: 1px solid var(--jp-border-color1);
+  background: transparent;
+  color: var(--jp-ui-font-color1);
+  border-radius: 4px;
+  padding: 1px 10px;
+  font-size: var(--jp-ui-font-size0);
+  cursor: pointer;
+}
+.harness-chat-think:hover {
+  background: var(--jp-layout-color2);
+}
+/* Tint the toggle by depth so the current mode reads at a glance. */
+.harness-chat-think[data-mode='full'] {
+  border-color: var(--jp-brand-color1);
+  color: var(--jp-brand-color1);
+}
+.harness-chat-think[data-mode='off'] {
+  opacity: 0.7;
+}
+.harness-chat-stop {
+  flex: 0 0 auto;
+}
 .harness-chat-log {
   flex: 1 1 auto;
   overflow: auto;

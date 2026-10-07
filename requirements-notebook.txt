@@ -12,10 +12,16 @@ tina4-groundwire>=0.1
 # (pulls in mlx-lm). Qwen3.8-2B-Distill is a vision-language model, so this is the whole MLX path.
 mlx-vlm>=0.1 ; sys_platform == "darwin" and platform_machine == "arm64"
 
-# Everything else (Windows, Linux, Intel Mac, CPU or NVIDIA CUDA) → PyTorch + transformers
-torch>=2.2 ; not (sys_platform == "darwin" and platform_machine == "arm64")
-transformers>=4.44 ; not (sys_platform == "darwin" and platform_machine == "arm64")
-psutil>=5.9 ; not (sys_platform == "darwin" and platform_machine == "arm64")
+# Everything else (Windows, Linux, Intel Mac, CPU or NVIDIA CUDA) → PyTorch + transformers.
+# Marker reads "NOT (Apple Silicon)" = "(not darwin) OR (not arm64)" — PEP 508 has no `not`
+# operator, so it is expressed with `!=` and `or` (both pip and uv accept this).
+torch>=2.2 ; sys_platform != "darwin" or platform_machine != "arm64"
+# Qwen3.8-2B-Distill is a vision-language model; transformers builds its image/video
+# processor (Qwen3VLVideoProcessor) at load time, which imports torchvision — so it is a
+# hard requirement on the torch backend even though the notebook only uses text + images.
+torchvision>=0.17 ; sys_platform != "darwin" or platform_machine != "arm64"
+transformers>=4.44 ; sys_platform != "darwin" or platform_machine != "arm64"
+psutil>=5.9 ; sys_platform != "darwin" or platform_machine != "arm64"
 
 # Reading images (both backends)
 Pillow>=10

@@ -30,10 +30,13 @@ class MLXModel(HarnessModel):
         import mlx.core as mx
         from mlx_vlm import load
 
+        import threading
+
         self._mx = mx
         self.device = "metal-gpu"
         self.settings = settings or Settings()
         self.last_stats = GenStats()
+        self._stop = threading.Event()  # set by request_stop() to end a generation early
 
         base = Path(models_dir) if models_dir else MODELS_DIR
         local = base / MLX_LOCAL_DIR
@@ -66,24 +69,32 @@ class MLXModel(HarnessModel):
         prompt = self._render([{"role": "user", "content": "hi"}])
         generate(self.model, self.processor, prompt, image=None, max_tokens=1, verbose=False)
 
-    def _render(self, messages: list[dict]) -> str:
-        # enable_thinking keeps the <think> reasoning the teaching notebook shows.
+    def _render(self, messages: list[dict], enable_thinking: bool = True) -> str:
+        # enable_thinking=True keeps the <think> reasoning the teaching notebook shows;
+        # False renders a terse no-reasoning prompt.
         try:
             return self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True, enable_thinking=True
+                messages, tokenize=False, add_generation_prompt=True,
+                enable_thinking=enable_thinking,
             )
         except TypeError:
             return self.tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
 
+    def request_stop(self) -> None:
+        """End the current generation at the next token (see model.py)."""
+        self._stop.set()
+
     # --- text generation -------------------------------------------------------------
-    def generate(self, messages, on_text=None, max_tokens=None, temperature=None):
+    def generate(self, messages, on_text=None, max_tokens=None, temperature=None,
+                 enable_thinking=True):
         from mlx_vlm import stream_generate
 
+        self._stop.clear()  # fresh run; request_stop() will set this to interrupt
         temp = self.settings.temperature if temperature is None else temperature
         limit = max_tokens or self.settings.max_tokens
-        prompt = self._render(messages)
+        prompt = self._render(messages, enable_thinking)
 
         chunks: list[str] = []
         last = None
@@ -94,6 +105,8 @@ class MLXModel(HarnessModel):
             if on_text:
                 on_text(resp.text)
             last = resp
+            if self._stop.is_set():  # Stop button / kernel interrupt → end early
+                break
 
         if last is not None:
             self.last_stats = GenStats(

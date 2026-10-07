@@ -28,6 +28,8 @@ class TorchModel(HarnessModel):
     backend = "torch"
 
     def __init__(self, models_dir=None, allow_download=True, settings: Settings | None = None):
+        import threading
+
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -35,6 +37,7 @@ class TorchModel(HarnessModel):
         self.repo_id = TORCH_REPO
         self.settings = settings or Settings()
         self.last_stats = GenStats()
+        self._stop = threading.Event()  # set by request_stop() to end a generation early
 
         self.path = (
             ensure_model(TORCH_REPO, models_dir, allow_download=allow_download)
@@ -43,17 +46,20 @@ class TorchModel(HarnessModel):
         )
         self.disk_gb = disk_size_gb(self.path)
 
+        # Set the CPU thread count for BOTH devices. On CPU it is the whole compute; on CUDA
+        # this model's reference kernels (gated-delta / causal-conv fallbacks) still dispatch
+        # per-token CPU work, so the thread count matters there too. Default 4 (HARNESS_THREADS).
+        try:
+            torch.set_num_threads(int(os.environ.get("HARNESS_THREADS", "4")))
+        except (ValueError, RuntimeError):
+            pass
+
         if torch.cuda.is_available():
             self.device = "cuda"
             dtype = torch.float16
         else:
             self.device = "cpu"
             dtype = torch.float32
-            # Use several CPU threads for faster generation on Windows/Linux without a GPU.
-            try:
-                torch.set_num_threads(int(os.environ.get("HARNESS_THREADS", "4")))
-            except (ValueError, RuntimeError):
-                pass
 
         t0 = time.time()
         self.tokenizer = AutoTokenizer.from_pretrained(str(self.path), trust_remote_code=True)
@@ -76,20 +82,42 @@ class TorchModel(HarnessModel):
             p.numel() * p.element_size() for p in self.model.parameters()
         ) / GB
 
-    def _render(self, messages: list[dict]) -> str:
-        return self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+    def _render(self, messages: list[dict], enable_thinking: bool = True) -> str:
+        # This model's chat template honours enable_thinking (no_think = terse, no reasoning).
+        # Fall back gracefully for any template that does not accept the kwarg.
+        try:
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+                enable_thinking=enable_thinking,
+            )
+        except TypeError:
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+    def request_stop(self) -> None:
+        """End the current generation at the next token (see model.py)."""
+        self._stop.set()
 
     # --- generation ------------------------------------------------------------------
-    def generate(self, messages, on_text=None, max_tokens=None, temperature=None):
+    def generate(self, messages, on_text=None, max_tokens=None, temperature=None,
+                 enable_thinking=True):
         import torch
-        from transformers import TextIteratorStreamer
+        from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
+
+        self._stop.clear()  # fresh run; request_stop() will set this to interrupt
+
+        class _StopOnFlag(StoppingCriteria):
+            def __init__(self, ev):
+                self._ev = ev
+
+            def __call__(self, input_ids, scores, **kwargs):
+                return self._ev.is_set()
 
         temp = self.settings.temperature if temperature is None else temperature
         limit = max_tokens or self.settings.max_tokens
 
-        prompt = self._render(messages)
+        prompt = self._render(messages, enable_thinking)
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         prompt_tokens = int(inputs["input_ids"].shape[-1])
 
@@ -103,6 +131,7 @@ class TorchModel(HarnessModel):
             temperature=max(temp, 1e-5),
             streamer=streamer,
             pad_token_id=self.tokenizer.eos_token_id,
+            stopping_criteria=StoppingCriteriaList([_StopOnFlag(self._stop)]),
         )
         if self.device == "cuda":
             torch.cuda.reset_peak_memory_stats()
