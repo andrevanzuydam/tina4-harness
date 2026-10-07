@@ -1153,18 +1153,18 @@ class ChatPanel extends Widget {
     // Three modes: a QUESTION explains (no cell); a FIX edits in place (no new cell); only a
     // CREATE/build/add request writes a NEW cell. Debugging never spams cells.
     const isFix = /\b(fix|debug|edit|updat|chang|refactor|rewrit|modif|correct|repair|solve)/i.test(text);
-    const isCreate = /\b(write|build|creat|make|add|generat|implement|tool|method|function|class|script|program|use|run|call|demo|try|invoke|exercise)\b/i.test(text);
     // An explicit "in a cell" / "new cell" means they want a CELL — honour it even over a question.
     const wantsCell = /\b(in|into|as|to)\s+a?\s*(new\s+)?cell\b/i.test(text) || /\bnew cell\b/i.test(text);
     const hasError = /error|traceback/i.test(output);
-    const isQuestion = /\b(what|why|how|explain|mean)\b/i.test(text);
-    // A QUESTION explains (no cell); a FIX edits in place; a CREATE/use/run request writes a cell.
+    const isQuestion = /\b(what|why|how|explain|mean)\b/i.test(text) || text.trim().endsWith('?');
+    // A QUESTION explains (no cell); a FIX edits in place; anything else is a request for CODE, so
+    // write it into a cell (a bare 'christmas tree' should produce a cell, not a chat-only answer).
     const mode: 'ask' | 'fix' | 'create' =
       isFix ? 'fix'
       : wantsCell ? 'create'
-      : isCreate && !isQuestion ? 'create'
       : hasError && !isQuestion ? 'fix'
-      : 'ask';
+      : isQuestion ? 'ask'
+      : 'create';
 
     // Attach the active cell's code ONLY when the request is about existing code (fix/ask/error) —
     // NOT for a 'create' request to write something new, where it just distracts the model.
