@@ -490,25 +490,31 @@ const APP_SENTINEL = '@@HARNESS_APP@@';
 /** Drop prose that is only a heading/label with no real content (e.g. "Explanation of the fix:",
  *  "Output:") — those render as big blank headers next to a code cell and say nothing. */
 function meaningfulProse(prose: string): string {
-  const stripped = prose
-    .replace(/^#{1,6}\s*/gm, '') // markdown headings -> plain
-    .replace(/\*\*/g, '')
-    .trim();
-  if (!stripped) {
-    return '';
-  }
-  // A single short line that's just a label (ends with ':' or is a known filler) is not useful.
-  const lines = stripped.split('\n').map(l => l.trim()).filter(Boolean);
-  if (lines.length === 1) {
-    const only = lines[0];
-    if (/[:：]$/.test(only) || only.length < 4) {
-      return '';
+  // Drop every line that is just a heading/label with no content on it (a bold/heading line ending
+  // in ':', or a known filler), keeping only lines that actually say something. If nothing real is
+  // left, return '' so the chat shows no empty header at all.
+  const kept: string[] = [];
+  for (const raw of prose.split('\n')) {
+    const line = raw.trim();
+    if (!line) {
+      continue;
     }
-    if (/^(explanation( of the (fix|code))?|output|result|here('?s)?( the)?( code| fix)?|code|solution|note|summary)\s*[:：]?$/i.test(only)) {
-      return '';
+    const plain = line
+      .replace(/^#{1,6}\s*/, '')
+      .replace(/\*\*/g, '')
+      .replace(/^[-*]\s+/, '')
+      .trim();
+    const isBareLabel =
+      /[:：]$/.test(plain) ||
+      /^(short(est)? form(\s+with\s+.+)?|usage|example|examples|output|result|explanation(\s+of\s+.+)?|code|solution|note|notes|summary|steps?|here(\s*'?s)?(\s+the)?(\s+code|\s+fix)?)\s*[:：]?$/i.test(
+        plain
+      );
+    if (isBareLabel || plain.length < 3) {
+      continue;
     }
+    kept.push(line);
   }
-  return prose.trim();
+  return kept.join('\n').trim();
 }
 
 /** A short, human description of what a code block does, for the action note. */
@@ -1226,8 +1232,8 @@ class ChatPanel extends Widget {
         return;
       }
       if (mode === 'ask') {
-        // A question: show the explanation in the chat, insert nothing.
-        await this._append('assistant', reply || '(no reply)');
+        // A question: show the explanation in the chat, insert nothing — but strip empty headers.
+        await this._append('assistant', meaningfulProse(reply) || '(no reply)');
       } else {
         const { prose, blocks } = splitCode(reply);
         const mp = meaningfulProse(prose);
