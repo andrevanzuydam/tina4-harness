@@ -150,7 +150,56 @@ Expected (verified on this machine): the container prints
 > Prerequisite: virtualization (Intel VT-x / VT-d) must be enabled in BIOS — WSL2 and
 > Docker both require it.
 
-### Next step (not yet done)
-With Docker + GPU verified, a vLLM container can be launched with `--gpus all`. **First**
-do a load-test to confirm vLLM accepts the `qwen3_5` vision model before building a
-workflow around it — this is the open question above.
+### Running vLLM (verified)
+
+vLLM **does** serve this model — but only the **nightly** image, whose Transformers is new
+enough to recognize `qwen3_5` (the stable `:latest` image fails with "Transformers does not
+recognize this architecture"). The nightly image is ~33 GB.
+
+Capped config that fits an 8 GB GPU and leaves headroom for the display:
+
+```bash
+docker run -d --name vllm --restart unless-stopped -p 8000:8000 --gpus all \
+  -v /path/to/models/empero-ai__Qwen3.8-2B-Distill:/model:ro \
+  --entrypoint python3 vllm/vllm-openai:nightly \
+  -m vllm.entrypoints.openai.api_server --host 0.0.0.0 --port 8000 \
+  --model /model --served-model-name qwen3_5 --trust-remote-code \
+  --max-model-len 2048 --gpu-memory-utilization 0.72 --max-num-seqs 4 \
+  --enforce-eager --limit-mm-per-prompt '{"image": 0, "video": 0}'
+```
+
+Then it's an OpenAI-compatible server at `http://localhost:8000/v1` (model name `qwen3_5`),
+with Swagger UI at `/docs`.
+
+**Memory & startup notes (8 GB GPU):**
+- `--gpu-memory-utilization 0.72` caps vLLM at ~5.8 GB; total device use settles ~7 GB
+  (incl. CUDA context), leaving ~1 GB free. Without a cap, startup profiling drives it toward
+  the full 8 GB and pins the GPU — on a laptop that means max fans/heat for minutes.
+- `--enforce-eager` disables CUDA graphs (saves memory, costs decode speed — see below).
+- `--limit-mm-per-prompt '{"image":0,"video":0}'` skips the heavy vision-encoder profiling.
+- The model's weights are ~4.5 GB (bf16), so ~5 GB on the GPU is an unavoidable floor here.
+- Loading over the Windows 9P bind mount is slow; copy the weights into the WSL2 filesystem
+  for faster startup.
+
+**Measured performance** (RTX 4060 8 GB, capped config above, 120 tokens, greedy):
+
+| Scenario                 | tok/s |
+|--------------------------|-------|
+| native transformers (single) | 28.5 |
+| vLLM single request      | 5.0  |
+| vLLM 4 concurrent (agg)  | 19.6 |
+| vLLM 8 concurrent (agg)  | 36.0 |
+
+**Conclusion:** there is a crossover. For a **single user**, native is ~5× faster (vLLM's
+`--enforce-eager`, needed to fit 8 GB, kills per-token speed). Under **concurrent load**,
+vLLM's continuous batching scales past native (~36 tok/s aggregate at 8 concurrent). To make
+vLLM fast for single requests you'd drop `--enforce-eager` (CUDA graphs) and grow the batch —
+which needs more VRAM than 8 GB for this bf16 model. A **4-bit quantized** build (~2–3 GB)
+would free that room and lift every number.
+
+### Where tina4 fits
+vLLM's FastAPI server is the *inference tier* (raw model endpoint). The *application tier* is
+**tina4** (`app.py` is a `tina4_python` ASGI app). A tina4 route hosts the agent/harness loop,
+auth and routing, and calls the model backend — either the in-process harness model (native,
+single-user) or the vLLM endpoint at `http://localhost:8000/v1` (for concurrency). vLLM does
+not replace tina4; it sits behind it.
