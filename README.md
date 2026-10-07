@@ -66,6 +66,10 @@ The cells hold the real code — read them, change them, re-run them:
 - **Node.js 18+** (optional) — only for the §13 right-click menus. Without it the notebook still
   works fully; `install.sh` just skips building the extension.
 
+> **Windows + NVIDIA GPU:** performance numbers (GPU ~5× CPU), why this hybrid model is
+> kernel-bound, and the WSL2 + Docker + GPU setup for faster engines (vLLM) are written up in
+> [`docs/windows-gpu.md`](docs/windows-gpu.md).
+
 ### macOS / Linux
 ```bash
 ./install.sh      # creates .venv-notebook and installs everything (uses uv if present)
