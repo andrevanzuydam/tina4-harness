@@ -59,8 +59,10 @@ The cells hold the real code — read them, change them, re-run them:
 ### Requirements
 - **Python 3.12**
 - **macOS (Apple Silicon)** → runs on **MLX** (Metal GPU, 4-bit weights, ~1.6 GB). Fast.
-- **Windows / Linux / Intel Mac** → runs on **PyTorch + transformers** (CPU, or NVIDIA CUDA if
-  present). The 2B model works on CPU; it is just slower.
+- **Windows / Linux with an NVIDIA GPU** → the installer auto-detects the GPU (via `nvidia-smi`)
+  and installs the **CUDA** build of PyTorch, so the model runs on the GPU in float16. Much faster.
+- **Windows / Linux / Intel Mac without a GPU** → runs on **PyTorch + transformers** on the CPU.
+  The 2B model works on CPU; it is just slower (a few tokens/sec).
 - **Node.js 18+** (optional) — only for the §13 right-click menus. Without it the notebook still
   works fully; `install.sh` just skips building the extension.
 
@@ -119,7 +121,24 @@ install.ps1 / run.ps1     Windows
 
 ## Configuration
 - `HARNESS_BACKEND=mlx|torch` — force a backend (otherwise auto-detected).
+- `HARNESS_CUDA=cuXXX|cpu` — set **before running the installer**. With an NVIDIA GPU the
+  installer picks the CUDA build automatically; use this to pin a specific CUDA version (e.g.
+  `cu126`, `cu128`, `cu130` — match your driver's CUDA version from `nvidia-smi`), or set
+  `cpu` to force the CPU build. No effect on Apple Silicon (which uses MLX).
+- `HARNESS_THREADS=N` — CPU threads used for generation on the torch backend, GPU or CPU
+  (default 4). Even on CUDA this model's reference kernels dispatch per-token CPU work.
 - Weights live in `models/`; delete that folder to re-download.
+
+### Is it actually using my GPU?
+```python
+import sys; sys.path.insert(0, "src")
+from harness import load_model
+m = load_model()
+print(m.memory())   # torch backend: look for "device": "cuda"
+```
+If `device` is `cpu` but you have an NVIDIA GPU, you installed the CPU build of torch. Re-run
+the installer (it will detect the GPU), or force it with `HARNESS_CUDA=cu128`. Note: close any
+running notebook/kernel first — a loaded torch locks its files on Windows and blocks the swap.
 
 ## Credits
 - Model: **Qwen3.8-2B-Distill** — a local 4-bit MLX conversion in `models/qwen38-2b-distill-4bit/`,

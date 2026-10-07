@@ -43,17 +43,20 @@ class TorchModel(HarnessModel):
         )
         self.disk_gb = disk_size_gb(self.path)
 
+        # Set the CPU thread count for BOTH devices. On CPU it is the whole compute; on CUDA
+        # this model's reference kernels (gated-delta / causal-conv fallbacks) still dispatch
+        # per-token CPU work, so the thread count matters there too. Default 4 (HARNESS_THREADS).
+        try:
+            torch.set_num_threads(int(os.environ.get("HARNESS_THREADS", "4")))
+        except (ValueError, RuntimeError):
+            pass
+
         if torch.cuda.is_available():
             self.device = "cuda"
             dtype = torch.float16
         else:
             self.device = "cpu"
             dtype = torch.float32
-            # Use several CPU threads for faster generation on Windows/Linux without a GPU.
-            try:
-                torch.set_num_threads(int(os.environ.get("HARNESS_THREADS", "4")))
-            except (ValueError, RuntimeError):
-                pass
 
         t0 = time.time()
         self.tokenizer = AutoTokenizer.from_pretrained(str(self.path), trust_remote_code=True)
