@@ -437,6 +437,86 @@ def _recent_file_hint(messages: list) -> str:
     return ""
 
 
+_RUN_SENTINEL = "@@HARNESS_RUN@@"  # extension: insert into a new cell AND run it (if safe)
+
+
+def _functions_in(code: str) -> list[tuple[str, list[str]]]:
+    out = []
+    for m in re.finditer(r"^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)[ \t]*\(([^)]*)\)", code or "", re.M):
+        params = [p.strip() for p in m.group(2).split(",") if p.strip() and p.strip() != "self"]
+        out.append((m.group(1), params))
+    return out
+
+
+def _simple_arg(param: str, i: int):
+    """A plain example value for a positional parameter (skip ones with defaults)."""
+    if "=" in param or param.strip().startswith("*"):
+        return None
+    base = param.split(":")[0].strip().lower()
+    ann = param.split(":", 1)[1].strip().lower() if ":" in param else ""
+    if "str" in ann or base in ("name", "text", "s", "word", "msg", "message", "title"):
+        return '"example"'
+    if "bool" in ann:
+        return "True"
+    if "list" in ann:
+        return "[1, 2, 3]"
+    if "dict" in ann:
+        return "{}"
+    if "float" in ann:
+        return str(round(1.5 + i, 1))
+    return str(2 + i)  # default: small distinct integers (add(2, 3), etc.)
+
+
+def _example_call(name: str, params: list, text: str) -> str:
+    """Build a runnable call to an EXISTING function. The model picks example values (grounded in the
+    real signature); falls back to simple ones so it always runs."""
+    sig = f"{name}({', '.join(params)})"
+    sys = (f"The function {sig} already exists. Write ONLY ONE line that CALLS it with sensible "
+           f"example argument values and prints the result, like print({name}(...)). "
+           "Output ONLY that one line — no prose, no explanation, no code fence, no def.")
+    raw = _strip_think(_generate([{"role": "system", "content": sys},
+                                  {"role": "user", "content": text}], 120)).strip()
+    for ln in [l.strip().strip("`") for l in raw.splitlines()]:
+        if (name + "(") in ln and "def " not in ln:
+            try:
+                compile(ln, "<e>", "exec")
+                return ln
+            except Exception:
+                break
+    args = [a for k, p in enumerate(params) if (a := _simple_arg(p, k)) is not None]
+    return f"print({name}({', '.join(args)}))"
+
+
+def _maybe_example(last_user: str, notebook_code: str, open_files: str, messages: list):
+    """'make me an example' / 'how do I call X' / 'use X' about a function that EXISTS in the
+    notebook → build a NEW cell that calls it (and runs it). 'Ask one short question' when the
+    intent clearly wants an example but no function can be identified."""
+    wants = bool(
+        re.search(r"\b(example|usage|demo|how\s+(do|to|can)\s+\w*\s*\w*\s*(use|call|run)|call|invoke|exercise|use)\b",
+                  last_user, re.I)
+    )
+    if not wants:
+        return None
+    pool = (notebook_code or "") + "\n" + (open_files or "")
+    funcs = _functions_in(pool)
+    order = [n for n, _ in funcs]
+    funcmap = {n: p for n, p in funcs}
+    real = [n for n in order if n not in ("main", "call")]  # candidates to disambiguate over
+    target = next((n for n in funcmap if re.search(r"\b" + re.escape(n) + r"\b", last_user)), None)
+    if target is None:
+        if re.search(r"\b(it|this|that|the (function|method|code))\b", last_user, re.I) and real:
+            target = real[-1]                     # anaphora → the most recently defined
+        elif len(real) == 1:
+            target = real[0]                      # only one candidate → it's obvious
+    if target is None:
+        if real:  # wants an example but which? ask ONE short question (per "ask when unsure")
+            return f"Which function should I write an example for? I can see: {', '.join(real[:6])}."
+        return None  # no functions in context → let normal handling take it
+    call = _example_call(target, funcmap[target], last_user)
+    note = f"Example calling `{target}`:"
+    return f"{_RUN_SENTINEL}{note}\n\n```python\n{call}\n```"
+
+
 def _maybe_load(text: str, messages: list):
     """If this is a 'load/open/show <file>' request, read the file (notebook space OR open repo)
     and return its source tagged for direct cell insertion — NO model, NO comprehension, just the
@@ -801,6 +881,11 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     loaded = _maybe_load(last_user, messages)
     if loaded is not None:
         return loaded
+
+    # "example of / how do I call X" about a function in the notebook → build a NEW cell calling it.
+    example = _maybe_example(last_user, notebook_code, open_files, messages)
+    if example is not None:
+        return example
 
     # If a repo is open, answer code/exploration questions FROM the repo (not the active cell).
     try:

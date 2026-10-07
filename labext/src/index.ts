@@ -482,6 +482,8 @@ function stripFences(code: string): string {
 /** Split a Markdown reply into prose and its fenced code blocks (code has no fences). */
 // Reply prefix (from harness.lab) that means: insert the code block straight into a new cell.
 const INSERT_SENTINEL = '@@HARNESS_INSERT@@\n';
+// Reply prefix meaning: insert into a NEW cell AND run it (e.g. an example that calls existing code).
+const RUN_SENTINEL = '@@HARNESS_RUN@@';
 // Reply prefix meaning: files were written to a Tina4 project — show read-only + refresh preview.
 const WROTE_SENTINEL = '@@HARNESS_WROTE@@';
 // Reply prefix meaning: a new app was provisioned+served — open the App Preview tab at <url>.
@@ -1215,6 +1217,22 @@ class ChatPanel extends Widget {
         if (n > 0) {
           await this._append('assistant', `↻ Refreshed ${n} App Preview tab${n > 1 ? 's' : ''}.`);
         }
+        this._save();
+        this._send.disabled = false;
+        return;
+      }
+      // An example/call: add a NEW cell that calls existing code and RUN it (unless it reads stdin).
+      if (reply.startsWith(RUN_SENTINEL)) {
+        const { prose, blocks } = splitCode(reply.slice(RUN_SENTINEL.length));
+        for (const code of blocks) {
+          const cell = insertBelowWithSource(panel, code);
+          panel.content.activeCellIndex = panel.content.widgets.indexOf(cell);
+          const readsInput = code.split('\n').some(l => /\binput\s*\(/.test(l) && !/^\s/.test(l) && !l.trimStart().startsWith('#'));
+          if (!readsInput) {
+            await runCell(panel, cell);
+          }
+        }
+        await this._append('assistant', meaningfulProse(prose) || 'Added a cell.');
         this._save();
         this._send.disabled = false;
         return;
