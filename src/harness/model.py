@@ -117,14 +117,31 @@ def load_model(
     models_dir: Path | str | None = None,
     allow_download: bool = True,
     settings: Settings | None = None,
+    allow_remote: bool = True,
 ) -> HarnessModel:
     """Load the distilled model with the right backend for this machine.
 
-    The weights are fetched into the project's ``models/`` folder on first use (see
+    If ``HARNESS_MODEL_SERVER`` points at a running shared model server (see ``harness.server``)
+    and ``allow_remote`` is set, this returns a thin proxy to it instead of loading weights — so
+    every notebook kernel shares ONE model in memory. Set ``allow_remote=False`` inside the server
+    itself (to actually load the weights) and to force a local, in-kernel model.
+
+    Otherwise the weights are fetched into the project's ``models/`` folder on first use (see
     ``download.ensure_model``), so a second run — and an offline run — is instant.
     """
-    backend = (backend or pick_backend()).lower()
+    import os
+
     settings = settings or Settings()
+
+    server_url = os.environ.get("HARNESS_MODEL_SERVER")
+    if allow_remote and server_url:
+        from .backends.remote_backend import RemoteModel, reachable
+
+        if reachable(server_url):
+            return RemoteModel(server_url, settings=settings)
+        # Server configured but not up yet → fall through to a local load so nothing breaks.
+
+    backend = (backend or pick_backend()).lower()
 
     if backend == "mlx":
         from .backends.mlx_backend import MLXModel
