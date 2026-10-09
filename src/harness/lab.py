@@ -1091,6 +1091,18 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         recent.append(m)
         used += c
     recent.reverse()
+    # Ground the CURRENT turn in the code the user is pointing at, so a poisoned history (e.g. earlier
+    # "please share the code" deflections) can't make the model claim no code was provided. The code
+    # goes INTO the latest user message, not just the system prompt.
+    if context.strip():
+        recent = [dict(m) for m in recent]  # copy so we never mutate the caller's messages
+        for m in reversed(recent):
+            if m.get("role") == "user" and "```" not in m.get("content", ""):
+                m["content"] = (m.get("content", "")
+                                + "\n\nThe code I'm referring to (already provided — do NOT ask me to "
+                                "share it again; use it directly):\n```python\n"
+                                + context.strip()[:4000] + "\n```")
+                break
     _status("💭 thinking…")
     reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, chat_cap,
                                     stream=True, enable_thinking=enable_thinking))
