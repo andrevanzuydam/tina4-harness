@@ -1051,6 +1051,65 @@ class ChatPanel extends Widget {
     this._log.scrollTop = this._log.scrollHeight;
   }
 
+  /** After an explanation (e.g. "help"), OFFER to apply a corrected version to the cell the user
+   *  asked about: one click writes + runs it (with Undo), or review & edit first. The offer is the
+   *  "ask to fix"; the click is the change to the cell. */
+  private async _offerFix(panel: NotebookPanel, code: string, cell: Cell): Promise<void> {
+    const n = panel.content.widgets.indexOf(cell) + 1;
+    const bubble = document.createElement('div');
+    bubble.className = 'harness-msg harness-assistant';
+    const note = document.createElement('div');
+    note.className = 'harness-codenote';
+    note.textContent = `I can apply this to Cell ${n} for you.`;
+    bubble.appendChild(note);
+
+    const pills = document.createElement('div');
+    pills.className = 'harness-pills';
+    const prev = cell.model.sharedModel.getSource();
+    let applied = false;
+
+    const apply = document.createElement('button');
+    apply.className = 'harness-pill';
+    apply.textContent = `Apply fix to Cell ${n}`;
+    apply.onclick = () => void (async () => {
+      if (applied) {
+        cell.model.sharedModel.setSource(prev);
+        applied = false;
+        apply.textContent = `Apply fix to Cell ${n}`;
+        this._save();
+        return;
+      }
+      cell.model.sharedModel.setSource(code);
+      panel.content.activeCellIndex = panel.content.widgets.indexOf(cell);
+      await runCell(panel, cell);
+      applied = true;
+      apply.textContent = 'Undo';
+      this._save();
+    })();
+    pills.appendChild(apply);
+
+    const review = document.createElement('button');
+    review.className = 'harness-pill';
+    review.textContent = 'Review & edit';
+    review.onclick = () => void (async () => {
+      const edited = await editCodeDialog(this.rendermime, `Review the fix — Cell ${n}`, code);
+      if (edited === null) {
+        return;
+      }
+      cell.model.sharedModel.setSource(edited);
+      panel.content.activeCellIndex = panel.content.widgets.indexOf(cell);
+      await runCell(panel, cell);
+      applied = true;
+      apply.textContent = 'Undo';
+      this._save();
+    })();
+    pills.appendChild(review);
+
+    bubble.appendChild(pills);
+    this._log.appendChild(bubble);
+    this._log.scrollTop = this._log.scrollHeight;
+  }
+
   private async _append(role: string, content: string): Promise<HTMLElement> {
     const bubble = document.createElement('div');
     bubble.className = 'harness-msg harness-' + role;
@@ -1327,6 +1386,18 @@ class ChatPanel extends Widget {
       if (mode === 'ask') {
         // A question: show the explanation in the chat, insert nothing — but strip empty headers.
         await this._append('assistant', meaningfulProse(reply) || '(no reply)');
+        // If the explanation proposes a corrected version of the cell we were looking at, OFFER to
+        // apply it — the chat ask, you one-click the fix into the cell (Undo + Review on hand).
+        const fixCell: Cell | null = sel ? sel.cell : active;
+        if (fixCell && context && context.trim()) {
+          const cur = context.trim();
+          const proposed = splitCode(reply).blocks
+            .map(b => b.trim())
+            .find(b => b.length > 0 && b !== cur);
+          if (proposed) {
+            await this._offerFix(panel, proposed, fixCell);
+          }
+        }
       } else {
         const { prose, blocks } = splitCode(reply);
         const mp = meaningfulProse(prose);

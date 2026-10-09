@@ -1060,21 +1060,26 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         except Exception:
             pass
     if intent == "ask":
-        system_text += (
-            "\n\nThis is a QUESTION, not a build request. EXPLAIN clearly in a few sentences; show at "
-            "most a tiny corrected snippet inline. Do NOT output a full program or a cell to run."
-        )
-        # A bare "help" (with a selected cell) means: explain THIS cell and flag any problems — the
-        # code is already provided below, so never ask the user to share it again.
-        if context.strip() and re.match(
+        # A bare "help" (with a selected cell) means: explain THIS cell and flag any problems, and —
+        # if a change is warranted — hand back the COMPLETE corrected cell so the UI can apply it.
+        is_help = bool(context.strip() and re.match(
             r"^\s*(?:please\s+|pls\s+|plz\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?h[ae]lp\b",
             last_user, re.I,
-        ):
+        ))
+        if is_help:
             system_text += (
-                "\n\nThe user asked for 'help' while this cell is selected. Explain in plain language "
+                "\n\nThe user asked for 'help' while this cell is selected. In plain language, explain "
                 "what the selected code does, then point out anything that looks wrong or could be "
-                "improved (at most 3 points). Use the selected code below directly — do NOT ask them "
-                "to paste or share it again."
+                "improved (at most 3 points). If — and ONLY if — something should change, give the "
+                "COMPLETE corrected cell as ONE ```python code block (the whole cell, ready to run "
+                "as-is) so it can be applied directly; if the code is already fine, do NOT output any "
+                "code block. Use the selected code below directly — never ask the user to paste or "
+                "share it again."
+            )
+        else:
+            system_text += (
+                "\n\nThis is a QUESTION, not a build request. EXPLAIN clearly in a few sentences; show "
+                "at most a tiny corrected snippet inline. Do NOT output a full program or a cell to run."
             )
     # "call / invoke / run the function" → just CALL an already-defined function, don't define a new one.
     if intent != "ask" and re.search(r"\b(call|invoke|run)\b", last_user, re.I):
