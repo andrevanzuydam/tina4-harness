@@ -35,10 +35,13 @@ else
   done
 fi
 
-# 2) JupyterLab — kernels inherit HARNESS_MODEL_SERVER and share the one model.
-echo "▶ starting JupyterLab on http://localhost:${JUPYTER_PORT}/lab …"
+# 2) JupyterLab — rooted at notebooks/ so every notebook shares one cwd (the notebook space),
+#    and kernels inherit HARNESS_MODEL_SERVER to share the one model.
+NB_ROOT="${NB_ROOT:-$ROOT/notebooks}"
+mkdir -p "$NB_ROOT"
+echo "▶ starting JupyterLab on http://localhost:${JUPYTER_PORT}/lab  (root: $NB_ROOT) …"
 exec "$PY" -m jupyterlab \
-  --ServerApp.root_dir="$ROOT" \
+  --ServerApp.root_dir="$NB_ROOT" \
   --IdentityProvider.token= --ServerApp.token= --ServerApp.password= \
   --PasswordIdentityProvider.hashed_password= --PasswordIdentityProvider.password_required=False \
   --ServerApp.disable_check_xsrf=True --no-browser --port "$JUPYTER_PORT"
