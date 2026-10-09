@@ -493,6 +493,9 @@ const RUN_SENTINEL = '@@HARNESS_RUN@@';
 const WROTE_SENTINEL = '@@HARNESS_WROTE@@';
 // Reply prefix meaning: a new app was provisioned+served — open the App Preview tab at <url>.
 const APP_SENTINEL = '@@HARNESS_APP@@';
+// Reply prefix meaning: the kernel VALIDATED a real fix — show the prose, offer to apply the trailing
+// block to the cell. Only this sentinel offers a fix; a plain explanation that echoes code never does.
+const FIX_SENTINEL = '@@HARNESS_FIX@@\n';
 
 /** Drop prose that is only a heading/label with no real content (e.g. "Explanation of the fix:",
  *  "Output:") — those render as big blank headers next to a code cell and say nothing. */
@@ -1383,26 +1386,28 @@ class ChatPanel extends Widget {
         this._send.disabled = false;
         return;
       }
-      if (mode === 'ask') {
-        // A question: show the explanation in the chat, insert nothing — but strip empty headers.
-        await this._append('assistant', meaningfulProse(reply) || '(no reply)');
-        // If the explanation proposes a corrected version of the cell we were looking at, OFFER to
-        // apply it — the chat ask, you one-click the fix into the cell (Undo + Review on hand).
-        const fixCell: Cell | null = sel ? sel.cell : active;
-        if (fixCell && context && context.trim()) {
-          // Compare CODE only — strip line comments, trailing space and blank lines — so a proposal
-          // that merely reworded a comment (or is identical) is NOT offered as a "fix". "broken_add"
-          // with correct code must not get a bogus Apply button.
-          const codeOnly = (s: string) =>
-            s.split('\n').map(l => l.replace(/#.*$/, '').replace(/\s+$/, '')).join('\n').replace(/\n{2,}/g, '\n').trim();
-          const cur = codeOnly(context);
-          const proposed = splitCode(reply).blocks
-            .map(b => b.trim())
-            .find(b => b.length > 0 && codeOnly(b) !== cur);
-          if (proposed) {
-            await this._offerFix(panel, proposed, fixCell);
-          }
+      // A VALIDATED fix (kernel decided): show the explanation, then offer to apply the trailing
+      // block to the cell. This is the ONLY path that offers a fix.
+      if (reply.startsWith(FIX_SENTINEL)) {
+        const { prose, blocks } = splitCode(reply.slice(FIX_SENTINEL.length));
+        const mp = meaningfulProse(prose);
+        if (mp) {
+          await this._append('assistant', mp);
         }
+        const fixCell: Cell | null = sel ? sel.cell : active;
+        const code = blocks.length ? blocks[blocks.length - 1] : '';
+        if (fixCell && code) {
+          await this._offerFix(panel, code, fixCell);
+        }
+        this._save();
+        this._send.disabled = false;
+        return;
+      }
+      if (mode === 'ask') {
+        // A question or a plain "help": show the explanation in the chat, insert nothing, and NEVER
+        // offer a fix — only a FIX_SENTINEL (a validated fix) does that. An explanation that happens
+        // to echo the code must not turn into an Apply button.
+        await this._append('assistant', meaningfulProse(reply) || '(no reply)');
       } else {
         const { prose, blocks } = splitCode(reply);
         const mp = meaningfulProse(prose);

@@ -689,6 +689,7 @@ def _detect_tina4(open_files: str, last_user: str = "", preview_urls: list | Non
 
 _WROTE_SENTINEL = "@@HARNESS_WROTE@@"  # tells the extension: files written, show + refresh preview
 _APP_SENTINEL = "@@HARNESS_APP@@"      # tells the extension: open the App Preview tab at <url>
+_FIX_SENTINEL = "@@HARNESS_FIX@@\n"    # tells the extension: offer to APPLY the trailing block to the cell
 
 
 def _is_new_app_request(text: str) -> bool:
@@ -1491,6 +1492,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             blocks = [b.strip() for b in re.findall(r"```(?:python)?\s*\n(.*?)```", reply, re.S) if b.strip()]
             cand = next((b for b in reversed(blocks) if _valid_python(b)[0]), None)  # proposed cell
             ran_error = bool(help_run.get("error"))
+            offer_fix = False  # only a VALIDATED fix sets this → the extension offers Apply then
 
             # A pinned assertion is the oracle: it, not the model, decides pass/fail and the fix.
             if assertion:
@@ -1525,12 +1527,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                         f"**after:** {'; '.join(fix['lines'])}._"
                     )
                     reply += "\n\n```python\n" + cand + "\n```"
+                    offer_fix = True
                 else:
                     reply = (reply + "\n\n" if reply else "") + (
                         f"_❌ Your check fails: {'; '.join(base['lines'])}. I couldn't produce a change "
                         "that makes it pass — check the expected value, or tell me more._"
                     )
-                return _cap_prose(reply, 1200)
+                return (_FIX_SENTINEL if offer_fix else "") + _cap_prose(reply, 1200)
 
             verdict = _fix_verdict(context, cand) if cand else None
             # A fix is offered ONLY when running it proves it helps: it clears a real error, or it
@@ -1550,6 +1553,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                     f"_▶ Validated by running both — **before:** {before} · **after:** {after}._"
                 )
                 reply += "\n\n```python\n" + cand + "\n```"
+                offer_fix = True
             elif ran_error:
                 # Genuinely broken (it raised), but no suggestion was validated to resolve it — report
                 # the real error honestly instead of offering a fix that doesn't actually fix it.
@@ -1566,6 +1570,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 else:  # the model proposed no change at all
                     detail = "I didn't find a behaviour problem — if it should do something different, tell me"
                 reply = (reply + "\n\n" if reply else "") + f"_✅ Validated by running it: {ran} — {detail}._"
+            return (_FIX_SENTINEL if offer_fix else "") + _cap_prose(reply, 1200)
         return _cap_prose(reply, 1200)  # an explanation to read in the chat — nothing inserted
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).
