@@ -1103,6 +1103,72 @@ def _probe_calls(code: str, max_calls: int = 4) -> str:
     return "\n".join(lines)
 
 
+def _valid_expr(src: str) -> bool:
+    import ast
+
+    try:
+        ast.parse(src, mode="eval")
+        return True
+    except Exception:
+        return False
+
+
+def _extract_assertion(text: str) -> list:
+    """Pull expectations the user pinned in their message so they can act as a test oracle, e.g.
+    'add(3,4)==7', 'add(3,4) should be 7', 'greet(\"Al\") returns \"Hi Al\"', or 'assert add(3,4)==7'.
+    Returns a list of Python boolean-expression strings (at most 3)."""
+    conds = []
+    for m in re.finditer(r"\bassert\s+(.+?)(?:[.;\n]|$)", text, re.I):
+        conds.append(m.group(1).strip())
+    # a call compared directly: name(args) ==|!=|>=|<=|>|< value
+    for m in re.finditer(
+        r"([A-Za-z_]\w*\s*\([^()]*\)\s*(?:==|!=|>=|<=|>|<)\s*[^,;\n]+?)(?=\s+(?:and|or)\s+|[,;.\n]|$)", text):
+        conds.append(m.group(1).strip())
+    # a call with phrasing: name(args) should be / returns / gives / equals / -> value
+    for m in re.finditer(
+        r"([A-Za-z_]\w*\s*\([^()]*\))\s*(?:should\s+(?:be|return|equal|give|output)s?|returns?|gives?|"
+        r"outputs?|equals?|is|=>|->)\s*"
+        r"(-?\d+(?:\.\d+)?|'[^']*'|\"[^\"]*\"|True|False|None|\[[^\]]*\]|\{[^}]*\}|\([^()]*\))",
+        text, re.I):
+        conds.append(f"{m.group(1).strip()} == {m.group(2).strip()}")
+    seen, out = set(), []
+    for c in conds:
+        if c not in seen and _valid_expr(c):
+            seen.add(c)
+            out.append(c)
+    return out[:3]
+
+
+def _assert_report(code: str, conds: list) -> dict:
+    """Run `code` then evaluate each pinned condition against it. Returns status (pass/fail/error) and
+    a human line per condition, including the ACTUAL value on failure."""
+    import ast
+
+    lines, status = [], "pass"
+    for c in conds:
+        r = _run_in_kernel(code + "\n(" + c + ")")
+        if r.get("error"):
+            lines.append(f"`{c}` → could not run ({r['error']})")
+            status = "error"
+            continue
+        passed = r.get("value") == "True"
+        actual = ""
+        if not passed:
+            try:
+                node = ast.parse(c, mode="eval").body
+                if isinstance(node, ast.Compare) and len(node.comparators) == 1:
+                    lhs = ast.unparse(node.left)
+                    ar = _run_in_kernel(code + "\n(" + lhs + ")")
+                    if not ar.get("error") and ar.get("value") is not None:
+                        actual = f" (got {ar['value']})"
+            except Exception:
+                pass
+            if status != "error":
+                status = "fail"
+        lines.append(f"`{c}` → {'PASS' if passed else 'FAIL' + actual}")
+    return {"status": status, "lines": lines}
+
+
 def _run_sig(res: dict):
     """A comparable signature of a run: (did it error, error type, printed text, returned value)."""
     err = res.get("error") or ""
@@ -1227,7 +1293,8 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                     any(_repo.find_file(t, exact=True) or _repo.find_file(t + ".py", exact=True) for t in toks)
             except Exception:
                 refs_code = False
-        if (strong or (explore and refs_code)) and _repo.ensure_indexed():
+        pinned = bool(context.strip() and intent == "ask" and _extract_assertion(last_user))
+        if (strong or (explore and refs_code)) and not pinned and _repo.ensure_indexed():
             _status("🔎 searching the repo…")
             # history → keeps follow-ups in context; open_files → aware of what's open on screen.
             return _repo.ask_repo(last_user, max_tokens=600, history=messages, open_code=open_files)
@@ -1265,6 +1332,8 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         except Exception:
             pass
     help_run: dict = {}
+    assertion: list = []
+    cell_help = False
     if intent == "ask":
         # A bare "help" (with a selected cell) means: explain THIS cell and flag any problems, and —
         # if a change is warranted — hand back the COMPLETE corrected cell so the UI can apply it.
@@ -1272,19 +1341,32 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             r"^\s*(?:please\s+|pls\s+|plz\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?h[ae]lp\b",
             last_user, re.I,
         ))
-        if is_help:
+        # A pinned expectation ("add(3,4)==7", "assert …") turns help into a real test oracle.
+        assertion = _extract_assertion(last_user) if context.strip() else []
+        cell_help = is_help or bool(assertion)
+        if cell_help:
             # Run the cell so the model's explanation is grounded in reality. The real decision about
-            # whether there's a bug is made AFTER generation by running the proposal (see _fix_verdict)
-            # — validation, not prompting.
+            # whether there's a bug is made AFTER generation by running the proposal (and the pinned
+            # assertion) — validation, not prompting.
             _status("▶ running the cell…")
             help_run = _run_in_kernel(context)
             system_text += (
-                "\n\nThe user asked for 'help' while this cell is selected. In plain language, explain "
+                "\n\nThe user asked for help while this cell is selected. In plain language, explain "
                 "what the selected code does. If something looks wrong, give the COMPLETE corrected "
                 "cell as ONE ```python code block (the whole cell, ready to run as-is); if it looks "
                 "fine, output no code block. Use the selected code below directly — never ask the user "
                 "to paste or share it again."
             )
+            if assertion:
+                base0 = _assert_report(context, assertion)
+                spec = "; ".join("assert " + c for c in assertion)
+                system_text += (
+                    f"\n\nThe cell MUST satisfy this check that the user pinned: {spec}\n"
+                    f"Running the cell now, the check currently {base0['status'].upper()} "
+                    f"({'; '.join(base0['lines'])}). If it does NOT all pass, return the COMPLETE "
+                    "corrected cell as ONE ```python block that makes every check pass (keep the public "
+                    "function names the same). If it already passes, output no code block."
+                )
             if help_run.get("ran") and help_run.get("skipped") is None:
                 system_text += "\n\nFor reference, running this cell just now: " + _run_summary(help_run)
         else:
@@ -1392,10 +1474,51 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         # A bare "help" on a selected cell: VALIDATE, don't guess. Run the proposed change and compare
         # its output to the original. The execution verdict — not the model's prose — decides whether
         # a bug is real and whether to keep the fix (so the UI offers it) or drop it (no offer).
-        if is_help and context.strip():
+        if cell_help and context.strip():
             blocks = [b.strip() for b in re.findall(r"```(?:python)?\s*\n(.*?)```", reply, re.S) if b.strip()]
             cand = next((b for b in reversed(blocks) if _valid_python(b)[0]), None)  # proposed cell
             ran_error = bool(help_run.get("error"))
+
+            # A pinned assertion is the oracle: it, not the model, decides pass/fail and the fix.
+            if assertion:
+                reply = re.sub(r"```(?:python)?\s*\n.*?```", "", reply, flags=re.S).strip()
+                reply = _drop_bug_claims(reply)
+                base = _assert_report(context, assertion)
+                fix = _assert_report(cand, assertion) if cand else None
+                # The code fails the check but no proposal passes it → ask the model ONCE more, aimed
+                # squarely at making the assertion pass (fulfilling the user's spec, not coaxing).
+                if base["status"] != "pass" and (fix is None or fix["status"] != "pass") and not _stopped:
+                    _status("▶ fixing to satisfy the check…")
+                    spec = "; ".join("assert " + c for c in assertion)
+                    aim = system_text + (
+                        f"\n\nReturn ONLY the complete corrected cell as one ```python block so that "
+                        f"{spec} all pass. Keep the public function names the same. No prose."
+                    )
+                    r2 = _strip_think(_generate([{"role": "system", "content": aim}] + recent, chat_cap,
+                                                enable_thinking=enable_thinking))
+                    b2 = re.findall(r"```(?:python)?\s*\n(.*?)```", r2, re.S)
+                    c2 = next((b.strip() for b in reversed(b2) if b.strip() and _valid_python(b.strip())[0]), None)
+                    if c2:
+                        f2 = _assert_report(c2, assertion)
+                        if f2["status"] == "pass":
+                            cand, fix = c2, f2
+                if base["status"] == "pass":
+                    reply = (reply + "\n\n" if reply else "") + \
+                        f"_✅ Checked your assertion by running it: {'; '.join(base['lines'])} — it holds._"
+                elif fix and fix["status"] == "pass":
+                    _status("▶ validated against your check…")
+                    reply = (reply + "\n\n" if reply else "") + (
+                        f"_▶ Validated against your check — **before:** {'; '.join(base['lines'])} · "
+                        f"**after:** {'; '.join(fix['lines'])}._"
+                    )
+                    reply += "\n\n```python\n" + cand + "\n```"
+                else:
+                    reply = (reply + "\n\n" if reply else "") + (
+                        f"_❌ Your check fails: {'; '.join(base['lines'])}. I couldn't produce a change "
+                        "that makes it pass — check the expected value, or tell me more._"
+                    )
+                return _cap_prose(reply, 1200)
+
             verdict = _fix_verdict(context, cand) if cand else None
             # A fix is offered ONLY when running it proves it helps: it clears a real error, or it
             # changes the output. "cosmetic"/"fix_breaks" are never offered.
