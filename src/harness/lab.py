@@ -997,15 +997,32 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     if example is not None:
         return example
 
-    # If a repo is open, answer code/exploration questions FROM the repo (not the active cell).
+    # Route to repo Q&A ONLY for code/repo questions — NOT general conversation. Because grounding is
+    # always on (the whole workspace), a bare "what is…" must not hijack a chat question like
+    # "what is my favourite number?". Trigger on an explicit code/repo signal, OR an exploration
+    # question that names a real file/function in the workspace.
     try:
         from . import repo as _repo
 
-        if re.search(
-            r"\b(repo|repositor|codebase|folder|directory|director|structure|organi[sz]|"
-            r"what (does|is)|how (does|is)|summar|overview|explain|where|which file|list)\b",
+        strong = re.search(
+            r"\b(repos?|repositor\w*|codebase|folders?|director\w*|structure|organi[sz]\w*|overview|"
+            r"layout|which files?|the code|this (?:repo|project|codebase|file)|"
+            r"in (?:the|this) (?:repo|project|codebase))\b"
+            r"|\blist\b.{0,25}\b(?:files?|folders?|programs?|scripts?|modules?|functions?|classes)\b"
+            r"|\.(?:py|js|ts|tsx|jsx|java|go|rs|rb|php|c|cpp|cs|swift|kt|html|css|sql|sh)\b",
             last_user, re.I,
-        ) and _repo.ensure_indexed():  # re-index the on-disk clone if this kernel has none
+        )
+        explore = re.search(r"\b(what|how|where|explain|summar|describe|review|does|show)\b", last_user, re.I)
+        refs_code = False
+        if explore and not strong:
+            toks = [t for t in re.findall(r"[A-Za-z_]\w{2,}", last_user)
+                    if t.lower() not in _CALL_STOPWORDS][:6]
+            try:
+                refs_code = bool(_repo.find_definitions(toks)) or \
+                    any(_repo.find_file(t, exact=True) or _repo.find_file(t + ".py", exact=True) for t in toks)
+            except Exception:
+                refs_code = False
+        if (strong or (explore and refs_code)) and _repo.ensure_indexed():
             _status("🔎 searching the repo…")
             # history → keeps follow-ups in context; open_files → aware of what's open on screen.
             return _repo.ask_repo(last_user, max_tokens=600, history=messages, open_code=open_files)
