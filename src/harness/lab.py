@@ -927,6 +927,34 @@ def _evolving_context(messages: list, query: str, keep_recent: int = 5, k: int =
     return _cap(relevant + recent)
 
 
+def _strip_docstrings(tree):
+    """Drop the leading bare-string docstring of every module/class/function node (in place)."""
+    import ast
+
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and body:
+            first = body[0]
+            if isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant) \
+               and isinstance(first.value.value, str):
+                node.body = body[1:] or [ast.Pass()]
+    return tree
+
+
+def _behaviour_equiv(a: str, b: str) -> bool:
+    """True when two snippets parse to the SAME AST once docstrings are removed — i.e. they do the
+    exact same thing and differ only in names-in-comments, docstrings, comments or formatting. Used
+    to reject a bogus 'fix' for code that is not actually broken (e.g. a mislabelled 'broken_add')."""
+    import ast
+
+    try:
+        da = ast.dump(_strip_docstrings(ast.parse(a)))
+        db = ast.dump(_strip_docstrings(ast.parse(b)))
+        return da == db
+    except Exception:
+        return False
+
+
 def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "",
           intent: str = "code", open_files: str = "", preview_urls: list | None = None,
           think: str = "full") -> str:
@@ -1070,11 +1098,17 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             system_text += (
                 "\n\nThe user asked for 'help' while this cell is selected. In plain language, explain "
                 "what the selected code does, then point out anything that looks wrong or could be "
-                "improved (at most 3 points). If — and ONLY if — something should change, give the "
-                "COMPLETE corrected cell as ONE ```python code block (the whole cell, ready to run "
-                "as-is) so it can be applied directly; if the code is already fine, do NOT output any "
-                "code block. Use the selected code below directly — never ask the user to paste or "
-                "share it again."
+                "improved (at most 3 points).\n"
+                "Judge the code ONLY by what it actually DOES when executed. The function's NAME, its "
+                "docstring, and its comments can be misleading or simply wrong — a name like "
+                "'broken_add', a docstring saying 'has a bug', or a comment like '# missing return' "
+                "does NOT mean there is a bug. Check every such claim against the real statements: if "
+                "the code already returns the right value and runs without error, it is CORRECT. Say "
+                "so plainly (e.g. 'despite the name/comment, this works correctly') and output NO code "
+                "block. Only when the code's BEHAVIOUR is actually wrong, give the COMPLETE corrected "
+                "cell as ONE ```python code block (the whole cell, ready to run as-is) so it can be "
+                "applied directly — and the change must fix real behaviour, not just reword a comment. "
+                "Use the selected code below directly — never ask the user to paste or share it again."
             )
         else:
             system_text += (
@@ -1178,6 +1212,17 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     if intent == "code":
         _status("🔎 checking syntax…")
     if intent == "ask":
+        # A bare "help" on a selected cell: if the model's "fix" is behaviourally identical to the
+        # cell (it only reworded a name/comment/docstring — e.g. a mislabelled 'broken_add' whose
+        # code is correct), it is NOT a fix. Drop the code block so no Apply offer appears, and state
+        # the deterministic fact so the explanation can't keep insisting on a bug that isn't there.
+        if is_help and context.strip():
+            blocks = re.findall(r"```(?:python)?\s*\n(.*?)```", reply, re.S)
+            if blocks and all(_behaviour_equiv(context, b) for b in blocks):
+                reply = re.sub(r"```(?:python)?\s*\n.*?```", "", reply, flags=re.S).strip()
+                reply += ("\n\n_Checked by parsing the code: it is valid and does exactly what it "
+                          "should — the name/comment/docstring may claim otherwise, but there is no "
+                          "actual bug to fix._")
         return _cap_prose(reply, 1000)  # an explanation to read in the chat — nothing inserted
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).

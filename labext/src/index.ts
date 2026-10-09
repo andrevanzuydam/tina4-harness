@@ -1390,10 +1390,15 @@ class ChatPanel extends Widget {
         // apply it — the chat ask, you one-click the fix into the cell (Undo + Review on hand).
         const fixCell: Cell | null = sel ? sel.cell : active;
         if (fixCell && context && context.trim()) {
-          const cur = context.trim();
+          // Compare CODE only — strip line comments, trailing space and blank lines — so a proposal
+          // that merely reworded a comment (or is identical) is NOT offered as a "fix". "broken_add"
+          // with correct code must not get a bogus Apply button.
+          const codeOnly = (s: string) =>
+            s.split('\n').map(l => l.replace(/#.*$/, '').replace(/\s+$/, '')).join('\n').replace(/\n{2,}/g, '\n').trim();
+          const cur = codeOnly(context);
           const proposed = splitCode(reply).blocks
             .map(b => b.trim())
-            .find(b => b.length > 0 && b !== cur);
+            .find(b => b.length > 0 && codeOnly(b) !== cur);
           if (proposed) {
             await this._offerFix(panel, proposed, fixCell);
           }
