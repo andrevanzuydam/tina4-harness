@@ -1196,10 +1196,18 @@ class ChatPanel extends Widget {
     const wantsCell = /\b(in|into|as|to)\s+a?\s*(new\s+)?cell\b/i.test(text) || /\bnew cell\b/i.test(text);
     const hasError = /error|traceback/i.test(output);
     const isQuestion = /\b(what|why|how|explain|mean)\b/i.test(text) || text.trim().endsWith('?');
+    // A bare "help" (no specific build topic) means: look at the cell they're on and explain it /
+    // flag problems — never spawn a new cell. "help me write/draw/build X" has its own topic, so it
+    // falls through to normal routing.
+    const isHelp = /^\s*(?:please\s+|pls\s+|plz\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?h[ae]lp\b/i.test(text);
+    const helpHasTopic = /\bhelp\b[^.?!]*\b(write|writing|create|creating|build|building|make|making|generat|add|draw|drawing|implement|example|function|script|program|app)\b/i.test(text)
+      && !/\b(this|that|here|above|below|current|selected|my code|the cell|this cell)\b/i.test(text);
+    const bareHelp = isHelp && !helpHasTopic;
     // A QUESTION explains (no cell); a FIX edits in place; anything else is a request for CODE, so
     // write it into a cell (a bare 'christmas tree' should produce a cell, not a chat-only answer).
     const mode: 'ask' | 'fix' | 'create' =
-      isFix ? 'fix'
+      bareHelp ? 'ask'
+      : isFix ? 'fix'
       : wantsCell ? 'create'
       : hasError && !isQuestion ? 'fix'
       : isQuestion ? 'ask'
@@ -1211,11 +1219,21 @@ class ChatPanel extends Widget {
       context = active.model.sharedModel.getSource();
     }
 
+    // Bare "help" with no cell to look at: ask which cell rather than inventing an answer.
+    if (bareHelp && !(context && context.trim())) {
+      this._messages.push({ role: 'user', content: text });
+      await this._append('user', text);
+      const q = "Happy to help — which cell? Click the cell you want help with (or tell me what you're stuck on) and I'll take a look.";
+      await this._append('assistant', q);
+      this._messages.push({ role: 'assistant', content: q });
+      return;
+    }
+
     this._messages.push({ role: 'user', content: text });
     await this._append('user', text);
     // A terse note of what it's looking at — only when it's actually working on an existing cell.
     const ctxCell: Cell | null = sel ? sel.cell : active;
-    if (ctxCell && context && context.trim() && (sel || mode === 'fix' || hasError)) {
+    if (ctxCell && context && context.trim() && (sel || mode === 'fix' || hasError || bareHelp)) {
       const n = panel.content.widgets.indexOf(ctxCell) + 1;
       await this._append('context', `Taking a look at Cell ${n}${hasError ? ' — fixing the error' : ''}`);
     }

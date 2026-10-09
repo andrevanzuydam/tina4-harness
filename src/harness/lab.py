@@ -1064,6 +1064,18 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             "\n\nThis is a QUESTION, not a build request. EXPLAIN clearly in a few sentences; show at "
             "most a tiny corrected snippet inline. Do NOT output a full program or a cell to run."
         )
+        # A bare "help" (with a selected cell) means: explain THIS cell and flag any problems — the
+        # code is already provided below, so never ask the user to share it again.
+        if context.strip() and re.match(
+            r"^\s*(?:please\s+|pls\s+|plz\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?h[ae]lp\b",
+            last_user, re.I,
+        ):
+            system_text += (
+                "\n\nThe user asked for 'help' while this cell is selected. Explain in plain language "
+                "what the selected code does, then point out anything that looks wrong or could be "
+                "improved (at most 3 points). Use the selected code below directly — do NOT ask them "
+                "to paste or share it again."
+            )
     # "call / invoke / run the function" → just CALL an already-defined function, don't define a new one.
     if intent != "ask" and re.search(r"\b(call|invoke|run)\b", last_user, re.I):
         system_text += (
