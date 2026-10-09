@@ -15,8 +15,11 @@ export HARNESS_MODEL_PORT="${HARNESS_MODEL_PORT:-7777}"
 export HARNESS_THREADS="${HARNESS_THREADS:-8}"
 export HARNESS_MODEL_SERVER="http://127.0.0.1:${HARNESS_MODEL_PORT}"
 JUPYTER_PORT="${JUPYTER_PORT:-8890}"
+NB_ROOT="${NB_ROOT:-$ROOT/notebooks}"
+# Always clone git repos into the notebook space (browsable in the file tree), whatever the cwd.
+export HARNESS_REPOS_DIR="${HARNESS_REPOS_DIR:-$NB_ROOT/repos}"
 
-mkdir -p "$ROOT/logs"
+mkdir -p "$ROOT/logs" "$NB_ROOT"
 
 # 1) Shared model server (skip if one is already answering).
 if curl -s -o /dev/null --max-time 2 "$HARNESS_MODEL_SERVER/health"; then

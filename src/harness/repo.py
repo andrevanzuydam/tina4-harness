@@ -26,11 +26,26 @@ def _repos_dir() -> Path:
 
     base = os.environ.get("HARNESS_REPOS_DIR")
     return (Path(base) if base else Path.cwd() / "repos")
+# A repo can be ANY language — index every common text/source extension (BM25 is language-agnostic;
+# only the extension gates what gets read). Binary and vendored dirs are skipped (_SKIP_DIRS), and
+# index() caps file size, so a wide net is safe.
 CODE_EXT = {
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".rb", ".php",
-    ".c", ".cpp", ".cc", ".h", ".hpp", ".cs", ".swift", ".kt", ".scala",
-    ".md", ".rst", ".txt", ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".sh",
+    # mainstream
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".java", ".go", ".rs", ".rb", ".php",
+    ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".cs", ".swift", ".kt", ".kts", ".scala",
+    # web / markup / style
+    ".html", ".htm", ".xml", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro",
+    # more languages
+    ".dart", ".lua", ".pl", ".pm", ".r", ".jl", ".ex", ".exs", ".erl", ".clj", ".cljs", ".cljc",
+    ".hs", ".ml", ".mli", ".fs", ".fsx", ".vb", ".groovy", ".gradle", ".nim", ".zig", ".v",
+    ".f90", ".f95", ".pas", ".d", ".cr", ".elm", ".purs", ".tcl", ".m", ".mm",
+    # data / config / schema / query
+    ".md", ".rst", ".txt", ".json", ".jsonc", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".env",
+    ".sql", ".graphql", ".gql", ".proto", ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat",
+    ".dockerfile", ".tf", ".hcl", ".make", ".mk", ".cmake",
 }
+# Common files that carry no extension but are worth indexing.
+CODE_NAMES = {"Dockerfile", "Makefile", "Rakefile", "Gemfile", "Procfile", "CMakeLists.txt", "README"}
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", "target"}
 
 _index = None
@@ -62,7 +77,9 @@ def index(path: Path | str, k: int = 5, max_words: int = 80):
     gw = Groundwire(memory="bm25", k=k, max_words=max_words)
     count = 0
     for f in path.rglob("*"):
-        if not f.is_file() or f.suffix.lower() not in CODE_EXT:
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in CODE_EXT and f.name not in CODE_NAMES:
             continue
         if _SKIP_DIRS & set(f.parts):
             continue
