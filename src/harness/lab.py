@@ -1294,7 +1294,20 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             except Exception:
                 refs_code = False
         pinned = bool(context.strip() and intent == "ask" and _extract_assertion(last_user))
-        if (strong or (explore and refs_code)) and not pinned and _repo.ensure_indexed():
+        # With a cell SELECTED, "explain the code" / "what does this do" means THAT cell — not the
+        # repo. Only an EXPLICIT repo/file/folder signal (a filename, 'repo', 'codebase', 'list the
+        # files', …) routes to repo Q&A then; the generic 'the code'/'this' stays on the selection.
+        has_sel = bool(context.strip()) and intent == "ask"
+        explicit_repo = bool(re.search(
+            r"\b(repos?|repositor\w*|codebase|folders?|director\w*|structure|layout|overview|"
+            r"organi[sz]\w*)\b"
+            r"|\.(?:py|js|ts|tsx|jsx|java|go|rs|rb|php|c|cpp|cs|swift|kt|html|css|sql|sh)\b"
+            r"|\blist\b.{0,25}\b(?:files?|folders?|programs?|scripts?|modules?|functions?|classes)\b"
+            r"|\bin (?:the|this) (?:repo|project|codebase)\b",
+            last_user, re.I,
+        ))
+        route_repo = explicit_repo or (not has_sel and (strong or (explore and refs_code)))
+        if route_repo and not pinned and _repo.ensure_indexed():
             _status("🔎 searching the repo…")
             # history → keeps follow-ups in context; open_files → aware of what's open on screen.
             return _repo.ask_repo(last_user, max_tokens=600, history=messages, open_code=open_files)
