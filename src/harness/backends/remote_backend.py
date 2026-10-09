@@ -41,11 +41,13 @@ class RemoteModel(HarnessModel):
             return json.loads(r.read().decode("utf-8"))
 
     # --- generation ------------------------------------------------------------------
-    def generate(self, messages, on_text=None, max_tokens=None, temperature=None) -> str:
+    def generate(self, messages, on_text=None, max_tokens=None, temperature=None,
+                 enable_thinking: bool = True) -> str:
         payload = {
             "messages": messages,
             "max_tokens": max_tokens if max_tokens is not None else self.settings.max_tokens,
             "temperature": temperature if temperature is not None else self.settings.temperature,
+            "enable_thinking": enable_thinking,
             "stream": on_text is not None,
         }
         if on_text is None:

@@ -106,6 +106,7 @@ class _Handler(BaseHTTPRequestHandler):
         messages = d["messages"]
         mt = d.get("max_tokens")
         temp = d.get("temperature")
+        think = d.get("enable_thinking", True)
         model = _get()
         if d.get("stream"):
             # Stream base64-encoded deltas, one per line, then an "__END__" line (chunked).
@@ -118,12 +119,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._write_chunk(base64.b64encode(chunk.encode("utf-8")) + b"\n")
 
             with _model_lock:
-                model.generate(messages, on_text=on_text, max_tokens=mt, temperature=temp)
+                model.generate(messages, on_text=on_text, max_tokens=mt, temperature=temp,
+                               enable_thinking=think)
             self._write_chunk(b"__END__\n")
             self._write_chunk(b"")  # terminating 0-length chunk
         else:
             with _model_lock:
-                text = model.generate(messages, max_tokens=mt, temperature=temp)
+                text = model.generate(messages, max_tokens=mt, temperature=temp, enable_thinking=think)
             self._send_json({"text": text})
 
     def _write_chunk(self, payload: bytes) -> None:
