@@ -955,6 +955,183 @@ def _behaviour_equiv(a: str, b: str) -> bool:
         return False
 
 
+def _run_in_kernel(code: str, timeout: float = 8.0) -> dict:
+    """Actually RUN a snippet so the agent can judge by reality, not by names/comments. Executes in a
+    COPY of the live kernel namespace (so it sees prior cells' imports/defs but cannot clobber them),
+    captures stdout+stderr and the value of a trailing expression, and never raises — a crash in the
+    snippet is returned as data. Bounded by a timeout; a snippet that reads stdin is skipped."""
+    import ast, io, contextlib, threading, traceback
+
+    res = {"ran": False, "out": "", "value": None, "error": None, "timeout": False, "skipped": None}
+    if not code.strip():
+        res["skipped"] = "empty"
+        return res
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        res["error"] = f"SyntaxError: {e.msg} (line {e.lineno})"
+        res["ran"] = True
+        return res
+    # A top-level input() would block until the timeout — don't run those.
+    if re.search(r"(?<![\w.])input\s*\(", code):
+        res["skipped"] = "reads stdin"
+        return res
+    try:
+        from IPython import get_ipython
+
+        ip = get_ipython()
+        ns = dict(ip.user_ns) if ip is not None else {}
+    except Exception:
+        ns = {}
+    ns["__name__"] = "__main__"  # so `if __name__ == "__main__":` blocks execute
+    buf = io.StringIO()
+
+    def _work():
+        try:
+            last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                exec(compile(tree, "<cell>", "exec"), ns)  # noqa: S102 — running the user's own cell
+                if last is not None:
+                    val = eval(compile(ast.Expression(last.value), "<cell>", "eval"), ns)  # noqa: S307
+                    if val is not None:
+                        res["value"] = repr(val)[:400]
+        except Exception as e:
+            res["error"] = f"{type(e).__name__}: {e}"
+            tb = traceback.format_exc().strip().splitlines()
+            if tb:
+                res["error_tb"] = tb[-1]
+        finally:
+            res["out"] = buf.getvalue()[:1500]
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(timeout)
+    res["ran"] = True
+    if t.is_alive():
+        res["timeout"] = True
+        res["out"] = buf.getvalue()[:1500]
+    return res
+
+
+_BUG_CLAIM = re.compile(
+    r"\b(bugs?|broken|errors?|fix(?:ed|es)?|fixing|wrong|incorrect|fails?|failing|failure|"
+    r"missing|doesn'?t|does not|won'?t|will not|never\s+returns?|syntaxerror|typeerror|"
+    r"nameerror|valueerror|exception|raise[sd]?|should\s+(?:be|return|instead|have)|"
+    r"problem|issue|mistake|typo|defect|flaw|correct(?:ed|ion|ions|ing)|"
+    r"would\s+have|instead\s+of|rather\s+than)\b",
+    re.I,
+)
+
+
+def _drop_bug_claims(text: str) -> str:
+    """Deterministically remove sentences/bullets that ASSERT a bug — for use only after the code has
+    been proven clean, so a stubborn model can't keep insisting on a bug that isn't there."""
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text)
+    kept = [p.strip() for p in parts if p.strip() and not _BUG_CLAIM.search(p)]
+    return " ".join(kept).strip()
+
+
+def _run_summary(res: dict) -> str:
+    """A one-line, human-readable summary of a _run_in_kernel result."""
+    if res.get("skipped"):
+        return f"not run ({res['skipped']})"
+    if res.get("timeout"):
+        return f"ran longer than the timeout and was left running; partial output: {res.get('out','').strip()[:200]!r}"
+    if res.get("error"):
+        out = res.get("out", "").strip()
+        return f"raised {res['error']}" + (f" (after printing {out[:120]!r})" if out else "")
+    out = res.get("out", "").strip()
+    val = res.get("value")
+    if out and val is not None:
+        return f"printed {out[:200]!r} and the last expression returned {val}"
+    if out:
+        return f"printed {out[:300]!r}"
+    if val is not None:
+        return f"the last expression returned {val}"
+    return "ran with no output or error"
+
+
+def _probe_calls(code: str, max_calls: int = 4) -> str:
+    """Build a snippet that CALLS each top-level function with simple, distinct arguments and prints
+    the result — so two versions of a cell can be compared by what they actually produce, not by how
+    they read. Distinct primes per position make e.g. a+b (=5) differ from a+1 (=3). Returns "" when
+    there is nothing callable (then the comparison falls back to the cell's own output)."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except Exception:
+        return ""
+    # Don't actively CALL functions that look like they touch files/network/processes with made-up
+    # args — only compare the cell's own output in that case.
+    if re.search(r"\b(open|os|shutil|subprocess|sys|socket|requests|urllib|httpx|pathlib|Path|"
+                 r"remove|unlink|rmtree|rename|write|send|connect|popen|system|exec|eval|input)\b", code):
+        return ""
+    primes = [2, 3, 5, 7, 11, 13, 17, 19]
+    lines = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name.startswith("_"):
+            continue
+        a = node.args
+        if a.vararg or a.kwarg or a.kwonlyargs:
+            continue  # keep probes to plain positional signatures
+        pos = list(getattr(a, "posonlyargs", [])) + list(a.args)
+        required = pos[: len(pos) - len(a.defaults)] if a.defaults else pos
+        vals = []
+        for i, arg in enumerate(required):
+            ann = getattr(arg, "annotation", None)
+            t = ann.id if isinstance(ann, ast.Name) else None
+            if t == "str":
+                vals.append(repr("abcde"[: i + 1]))
+            elif t == "float":
+                vals.append(str(primes[i % len(primes)]) + ".5")
+            elif t == "bool":
+                vals.append("True")
+            elif t in ("list", "List"):
+                vals.append("[1, 2, 3]")
+            elif t in ("dict", "Dict"):
+                vals.append("{'k': 1}")
+            else:  # int or unannotated → a distinct small number
+                vals.append(str(primes[i % len(primes)]))
+        call = f"{node.name}({', '.join(vals)})"
+        lines.append(
+            f"try:\n    print({node.name!r}, '->', repr({call}))\n"
+            f"except Exception as _e:\n    print({node.name!r}, 'raised', type(_e).__name__, _e)"
+        )
+        if len(lines) >= max_calls:
+            break
+    return "\n".join(lines)
+
+
+def _run_sig(res: dict):
+    """A comparable signature of a run: (did it error, error type, printed text, returned value)."""
+    err = res.get("error") or ""
+    etype = err.split(":", 1)[0] if err else ""
+    return (bool(err), etype, res.get("out", "").strip(), res.get("value"))
+
+
+def _fix_verdict(orig: str, fixed: str) -> str:
+    """Decide whether a proposed 'fix' is real by RUNNING both and comparing outputs:
+      'cosmetic'          — identical observable behaviour (not a fix at all)
+      'fixes_error'       — original errored, proposal runs clean
+      'fix_breaks'        — original ran clean, proposal errors (reject it)
+      'changes_behaviour' — both run but produce different output (a real candidate)
+    """
+    if _behaviour_equiv(orig, fixed):
+        return "cosmetic"  # identical once docstrings/comments are ignored — no need to run
+    probe = _probe_calls(orig)
+    suffix = ("\n" + probe) if probe else ""
+    a = _run_sig(_run_in_kernel(orig + suffix))
+    b = _run_sig(_run_in_kernel(fixed + suffix))
+    if a == b:
+        return "cosmetic"
+    if a[0] and not b[0]:
+        return "fixes_error"
+    if b[0] and not a[0]:
+        return "fix_breaks"
+    return "changes_behaviour"
+
+
 def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "",
           intent: str = "code", open_files: str = "", preview_urls: list | None = None,
           think: str = "full") -> str:
@@ -1087,6 +1264,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 system_text += "\n\nRelevant Tina4 documentation:\n" + docs[:1500]
         except Exception:
             pass
+    help_run: dict = {}
     if intent == "ask":
         # A bare "help" (with a selected cell) means: explain THIS cell and flag any problems, and —
         # if a change is warranted — hand back the COMPLETE corrected cell so the UI can apply it.
@@ -1095,21 +1273,20 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             last_user, re.I,
         ))
         if is_help:
+            # Run the cell so the model's explanation is grounded in reality. The real decision about
+            # whether there's a bug is made AFTER generation by running the proposal (see _fix_verdict)
+            # — validation, not prompting.
+            _status("▶ running the cell…")
+            help_run = _run_in_kernel(context)
             system_text += (
                 "\n\nThe user asked for 'help' while this cell is selected. In plain language, explain "
-                "what the selected code does, then point out anything that looks wrong or could be "
-                "improved (at most 3 points).\n"
-                "Judge the code ONLY by what it actually DOES when executed. The function's NAME, its "
-                "docstring, and its comments can be misleading or simply wrong — a name like "
-                "'broken_add', a docstring saying 'has a bug', or a comment like '# missing return' "
-                "does NOT mean there is a bug. Check every such claim against the real statements: if "
-                "the code already returns the right value and runs without error, it is CORRECT. Say "
-                "so plainly (e.g. 'despite the name/comment, this works correctly') and output NO code "
-                "block. Only when the code's BEHAVIOUR is actually wrong, give the COMPLETE corrected "
-                "cell as ONE ```python code block (the whole cell, ready to run as-is) so it can be "
-                "applied directly — and the change must fix real behaviour, not just reword a comment. "
-                "Use the selected code below directly — never ask the user to paste or share it again."
+                "what the selected code does. If something looks wrong, give the COMPLETE corrected "
+                "cell as ONE ```python code block (the whole cell, ready to run as-is); if it looks "
+                "fine, output no code block. Use the selected code below directly — never ask the user "
+                "to paste or share it again."
             )
+            if help_run.get("ran") and help_run.get("skipped") is None:
+                system_text += "\n\nFor reference, running this cell just now: " + _run_summary(help_run)
         else:
             system_text += (
                 "\n\nThis is a QUESTION, not a build request. EXPLAIN clearly in a few sentences; show "
@@ -1212,18 +1389,48 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     if intent == "code":
         _status("🔎 checking syntax…")
     if intent == "ask":
-        # A bare "help" on a selected cell: if the model's "fix" is behaviourally identical to the
-        # cell (it only reworded a name/comment/docstring — e.g. a mislabelled 'broken_add' whose
-        # code is correct), it is NOT a fix. Drop the code block so no Apply offer appears, and state
-        # the deterministic fact so the explanation can't keep insisting on a bug that isn't there.
+        # A bare "help" on a selected cell: VALIDATE, don't guess. Run the proposed change and compare
+        # its output to the original. The execution verdict — not the model's prose — decides whether
+        # a bug is real and whether to keep the fix (so the UI offers it) or drop it (no offer).
         if is_help and context.strip():
-            blocks = re.findall(r"```(?:python)?\s*\n(.*?)```", reply, re.S)
-            if blocks and all(_behaviour_equiv(context, b) for b in blocks):
-                reply = re.sub(r"```(?:python)?\s*\n.*?```", "", reply, flags=re.S).strip()
-                reply += ("\n\n_Checked by parsing the code: it is valid and does exactly what it "
-                          "should — the name/comment/docstring may claim otherwise, but there is no "
-                          "actual bug to fix._")
-        return _cap_prose(reply, 1000)  # an explanation to read in the chat — nothing inserted
+            blocks = [b.strip() for b in re.findall(r"```(?:python)?\s*\n(.*?)```", reply, re.S) if b.strip()]
+            cand = next((b for b in reversed(blocks) if _valid_python(b)[0]), None)  # proposed cell
+            ran_error = bool(help_run.get("error"))
+            verdict = _fix_verdict(context, cand) if cand else None
+            # A fix is offered ONLY when running it proves it helps: it clears a real error, or it
+            # changes the output. "cosmetic"/"fix_breaks" are never offered.
+            real_fix = verdict in ("fixes_error", "changes_behaviour")
+
+            reply = re.sub(r"```(?:python)?\s*\n.*?```", "", reply, flags=re.S).strip()
+            reply = _drop_bug_claims(reply)
+            if real_fix:
+                _status("▶ validated the fix…")
+                # Keep the proposal as THE code block so the extension offers to apply it, with the
+                # before/after evidence from actually running both.
+                probe = _probe_calls(context)
+                before = _run_summary(_run_in_kernel(context + ("\n" + probe if probe else "")))
+                after = _run_summary(_run_in_kernel(cand + ("\n" + probe if probe else "")))
+                reply = (reply + "\n\n" if reply else "") + (
+                    f"_▶ Validated by running both — **before:** {before} · **after:** {after}._"
+                )
+                reply += "\n\n```python\n" + cand + "\n```"
+            elif ran_error:
+                # Genuinely broken (it raised), but no suggestion was validated to resolve it — report
+                # the real error honestly instead of offering a fix that doesn't actually fix it.
+                extra = " The suggested change didn't resolve it when run." if cand else ""
+                reply = (reply + "\n\n" if reply else "") + (
+                    f"_▶ Running it raised: {help_run.get('error')}.{extra} Tell me the behaviour you "
+                    "want and I'll fix it._"
+                )
+            else:
+                # Ran clean and nothing changes the output → there is no bug.
+                ran = _run_summary(help_run) if (help_run.get("ran") and not help_run.get("skipped")) else "it is valid Python"
+                if verdict in ("cosmetic", "fix_breaks"):
+                    detail = "a suggested rewrite produces the exact same output, so there's nothing to fix"
+                else:  # the model proposed no change at all
+                    detail = "I didn't find a behaviour problem — if it should do something different, tell me"
+                reply = (reply + "\n\n" if reply else "") + f"_✅ Validated by running it: {ran} — {detail}._"
+        return _cap_prose(reply, 1200)  # an explanation to read in the chat — nothing inserted
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).
     m = _FENCE.search(tidied)
