@@ -884,6 +884,49 @@ _THINK_MODES = {
 }
 
 
+def _evolving_context(messages: list, query: str, keep_recent: int = 5, k: int = 8,
+                      max_chars: int = 60000) -> list:
+    """Endless chat via Groundwire: keep the last ``keep_recent`` turns verbatim (recency) and
+    RETRIEVE the most relevant EARLIER turns with BM25, so the prompt stays bounded no matter how
+    long the conversation grows. This is the 'rotating / evolving' context — old turns don't pile up
+    linearly; they're recalled only when relevant to the current question."""
+    def _cap(msgs: list) -> list:
+        out, used = [], 0
+        for m in reversed(msgs):
+            c = len(m.get("content", ""))
+            if out and used + c > max_chars:
+                break
+            out.append(m)
+            used += c
+        out.reverse()
+        return out
+
+    if len(messages) <= keep_recent + 3:
+        return _cap(messages)  # short conversation — send it all (within the cap)
+
+    recent = messages[-keep_recent:]
+    older = messages[:-keep_recent]
+    relevant: list = []
+    try:
+        from groundwire import Groundwire
+
+        gw = Groundwire(memory="bm25", k=k, max_words=160)
+        for i, m in enumerate(older):
+            txt = (m.get("role", "") + ": " + m.get("content", "")).strip()
+            if txt:
+                gw.ingest_code(txt, title=str(i))
+        idxs: set[int] = set()
+        for item in gw.retrieve(query, k=k):
+            text = item[1] if isinstance(item, (list, tuple)) and len(item) >= 2 else str(item)
+            mm = re.search(r"#\s*file:\s*(\d+)", text)
+            if mm:
+                idxs.add(int(mm.group(1)))
+        relevant = [older[i] for i in sorted(idxs) if 0 <= i < len(older)]  # chronological order
+    except Exception:
+        relevant = []
+    return _cap(relevant + recent)
+
+
 def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "",
           intent: str = "code", open_files: str = "", preview_urls: list | None = None,
           think: str = "full") -> str:
@@ -1079,18 +1122,10 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 system_text += "\n\nRelevant Python documentation (use if helpful, ignore if not):\n" + docs
         except Exception:
             pass
-    # Context budget: default ~128K tokens (≈ 512K chars). The model supports up to 256K; a 2B is
-    # sharpest with less, so keep only as much recent history as fits. Tune with HARNESS_CONTEXT_CHARS.
-    budget = int(os.environ.get("HARNESS_CONTEXT_CHARS", str(512_000)))
-    recent: list = []
-    used = 0
-    for m in reversed(messages):
-        c = len(m.get("content", ""))
-        if recent and used + c > budget:
-            break
-        recent.append(m)
-        used += c
-    recent.reverse()
+    # Endless chat with a BOUNDED prompt: recency (last turns) + Groundwire-retrieved relevant older
+    # turns ("rotating/evolving" context). Tune the overall char cap with HARNESS_CONTEXT_CHARS.
+    budget = int(os.environ.get("HARNESS_CONTEXT_CHARS", str(60_000)))
+    recent = _evolving_context(messages, last_user, max_chars=budget)
     # Ground the CURRENT turn in the code the user is pointing at, so a poisoned history (e.g. earlier
     # "please share the code" deflections) can't make the model claim no code was provided. The code
     # goes INTO the latest user message, not just the system prompt.
