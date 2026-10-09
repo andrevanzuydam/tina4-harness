@@ -1121,15 +1121,37 @@ def _looks_like_question(text: str) -> bool:
     )
 
 
-def _vision(image: str, question: str) -> str:
-    """Answer a question about an image — using the SAME model as text (Qwen3.8-2B-Distill is a VLM)."""
+def _resolve_image(image: str):
+    """Find an image whose path is given relative to the Jupyter ROOT, from a kernel whose cwd may
+    be a sub-folder (so 'notebooks/x.jpeg' must not become 'notebooks/notebooks/x.jpeg')."""
     from pathlib import Path
 
-    path = Path(image)
-    if not path.is_absolute():
-        path = Path.cwd() / image      # the kernel's cwd is the notebook folder
-    if not path.is_file():
-        return f"Could not find the image at {path}."
+    p = Path(image)
+    if p.is_absolute():
+        return p if p.is_file() else None
+    name = p.name
+    bases = [Path.cwd(), Path.cwd().parent, Path.cwd().parent.parent]
+    # Try the given relative path against each base, then just the basename.
+    for base in bases:
+        for cand in (base / image, base / name):
+            if cand.is_file():
+                return cand
+    # Last resort: search for the basename nearby.
+    for base in (Path.cwd(), Path.cwd().parent):
+        try:
+            hit = next((h for h in base.rglob(name) if h.is_file()), None)
+        except Exception:
+            hit = None
+        if hit:
+            return hit
+    return None
+
+
+def _vision(image: str, question: str) -> str:
+    """Answer a question about an image — using the SAME model as text (Qwen3.8-2B-Distill is a VLM)."""
+    path = _resolve_image(image)
+    if path is None:
+        return f"Could not find the image '{image}'."
 
     model = get_model()
     prompt = question or "Describe this image."
