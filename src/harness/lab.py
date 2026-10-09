@@ -690,6 +690,44 @@ def _detect_tina4(open_files: str, last_user: str = "", preview_urls: list | Non
 _WROTE_SENTINEL = "@@HARNESS_WROTE@@"  # tells the extension: files written, show + refresh preview
 _APP_SENTINEL = "@@HARNESS_APP@@"      # tells the extension: open the App Preview tab at <url>
 _FIX_SENTINEL = "@@HARNESS_FIX@@\n"    # tells the extension: offer to APPLY the trailing block to the cell
+_CHOICES_SENTINEL = "@@HARNESS_CHOICES@@"  # extension: render the options as clickable pills
+
+
+def _as_choices(reply: str) -> dict | None:
+    """If an ask reply is a clarifying question offering a SHORT list of options (e.g. 'A programming
+    language? / A specific code snippet? …'), return {lead, options} so the UI can show clickable
+    pills instead of making the user type. Returns None for ordinary explanatory lists."""
+    raw, other = [], []
+    for ln in reply.splitlines():
+        m = re.match(r"^\s*(?:[-*•‣▪]|\d+[.)])\s+(.+?)\s*$", ln)
+        if m:
+            raw.append(m.group(1).strip())
+        elif ln.strip() and not ln.strip().startswith("```"):
+            other.append(ln.strip())
+    if not (2 <= len(raw) <= 6):
+        return None
+    # A bullet may carry trailing lead-out prose after the choice ("A problem you're working on? Just
+    # let me know…") — keep only the choice itself (up to the first '?').
+    q_count, choices = 0, []
+    for o in raw:
+        if "?" in o:
+            q_count += 1
+            choices.append(o.split("?", 1)[0].strip())
+        else:
+            choices.append(o.strip())
+    if any(len(c) > 60 or not c for c in choices):
+        return None
+    lead = " ".join(other).strip()
+    cue = re.search(r"\b(what|which|are you|do you mean|let me know|clarify|clarif|looking for|"
+                    r"curious about|would you like|did you mean|referring to)\b", lead, re.I)
+    # A clarification: the options are mostly questions, or the lead-in explicitly asks to choose.
+    if not (q_count >= max(1, len(choices) // 2) or (cue and "?" in reply)):
+        return None
+    clean = [re.sub(r"^(an?|the)\s+", "", c, flags=re.I).strip() for c in choices]
+    clean = [c for c in clean if c]
+    if len(clean) < 2:
+        return None
+    return {"lead": lead or "Which did you mean?", "options": clean[:6]}
 
 
 def _is_new_app_request(text: str) -> bool:
@@ -1571,6 +1609,11 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                     detail = "I didn't find a behaviour problem — if it should do something different, tell me"
                 reply = (reply + "\n\n" if reply else "") + f"_✅ Validated by running it: {ran} — {detail}._"
             return (_FIX_SENTINEL if offer_fix else "") + _cap_prose(reply, 1200)
+        # A clarifying question with a short option list → let the UI show clickable pills.
+        choices = _as_choices(reply)
+        if choices:
+            import json as _json
+            return _CHOICES_SENTINEL + _json.dumps(choices)
         return _cap_prose(reply, 1200)  # an explanation to read in the chat — nothing inserted
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).

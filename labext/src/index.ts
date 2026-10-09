@@ -496,6 +496,9 @@ const APP_SENTINEL = '@@HARNESS_APP@@';
 // Reply prefix meaning: the kernel VALIDATED a real fix — show the prose, offer to apply the trailing
 // block to the cell. Only this sentinel offers a fix; a plain explanation that echoes code never does.
 const FIX_SENTINEL = '@@HARNESS_FIX@@\n';
+// Reply prefix meaning: a clarifying question with options — render them as clickable pills. Payload
+// is JSON {lead, options} on the rest of the line.
+const CHOICES_SENTINEL = '@@HARNESS_CHOICES@@';
 
 /** Drop prose that is only a heading/label with no real content (e.g. "Explanation of the fix:",
  *  "Output:") — those render as big blank headers next to a code cell and say nothing. */
@@ -1382,6 +1385,51 @@ class ChatPanel extends Widget {
           panel.content.activeCellIndex = panel.content.widgets.indexOf(cell);
         }
         await this._append('assistant', meaningfulProse(prose) || 'Loaded into a cell.');
+        this._save();
+        this._send.disabled = false;
+        return;
+      }
+      // A clarifying question with options → show the lead-in and a clickable pill per option; a
+      // click sends that choice as the next message (chips, not retyping).
+      if (reply.startsWith(CHOICES_SENTINEL)) {
+        let data: { lead?: string; options?: string[] } = {};
+        try {
+          data = JSON.parse(reply.slice(CHOICES_SENTINEL.length));
+        } catch {
+          data = {};
+        }
+        const opts = (data.options || []).filter(o => o && o.trim());
+        // Replace the raw sentinel we pushed into history with a readable clarification, so the
+        // follow-up turn sees clean context.
+        if (this._messages.length) {
+          this._messages[this._messages.length - 1].content =
+            (data.lead ? data.lead + '\n' : '') + opts.map(o => '- ' + o).join('\n');
+        }
+        if (data.lead) {
+          await this._append('assistant', data.lead);
+        }
+        if (opts.length) {
+          const bubble = document.createElement('div');
+          bubble.className = 'harness-msg harness-assistant';
+          const pills = document.createElement('div');
+          pills.className = 'harness-pills';
+          for (const opt of opts) {
+            const b = document.createElement('button');
+            b.className = 'harness-pill';
+            b.textContent = opt;
+            b.onclick = () => {
+              pills.querySelectorAll('button').forEach(x => ((x as HTMLButtonElement).disabled = true));
+              this._snapCell = null;      // a follow-up choice, not about a cell
+              this._lastSel = null;
+              this._input.value = opt;
+              void this._submit();
+            };
+            pills.appendChild(b);
+          }
+          bubble.appendChild(pills);
+          this._log.appendChild(bubble);
+          this._log.scrollTop = this._log.scrollHeight;
+        }
         this._save();
         this._send.disabled = false;
         return;
