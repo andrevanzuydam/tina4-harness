@@ -328,6 +328,11 @@ function openPreviewUrls(app: JupyterFrontEnd): string[] {
   return urls;
 }
 
+/** Does this notebook have a live kernel we can run the bridge on? */
+function hasKernel(panel: NotebookPanel): boolean {
+  return !!(panel && !panel.isDisposed && panel.sessionContext?.session?.kernel);
+}
+
 function insertBelowWithSource(panel: NotebookPanel, source: string): Cell {
   NotebookActions.insertBelow(panel.content);
   const cell = panel.content.activeCell!;
@@ -582,6 +587,8 @@ class ChatPanel extends Widget {
   private _lastPanel: NotebookPanel | null = null;
   private _busyPanel: NotebookPanel | null = null;
   private _lastSel: { cell: Cell; from: number; to: number } | null = null;
+  private _snapCell: Cell | null = null;     // the cell the user was on when they reached for chat
+  private _snapPanel: NotebookPanel | null = null;  // the notebook they were in (with a live kernel)
   private _histories = new Map<string, { role: string; content: string }[]>();
   private _currentKey = '';
   private _messages: { role: string; content: string }[] = [];
@@ -839,10 +846,17 @@ class ChatPanel extends Widget {
   /** Show, as a muted block, the selection and/or error the agent is being given. */
   /** Remember the cell selection at the moment the chat input is reached for. */
   private _snapshotSelection(): void {
-    const cell = this.tracker.currentWidget?.content.activeCell;
+    // Capture what the user is looking at BEFORE focus moves to the chat input: the focused
+    // notebook, its active cell, and any text selection. These power "what's wrong with my code?"
+    const panel = this.tracker.currentWidget;
+    if (panel && hasKernel(panel)) {
+      this._snapPanel = panel;
+    }
+    const cell = panel?.content.activeCell;
     if (!cell) {
       return;
     }
+    this._snapCell = cell;
     const { from, to, scope } = selectionOf(cell);
     if (scope === 'selection') {
       this._lastSel = { cell, from, to };
@@ -1063,23 +1077,32 @@ class ChatPanel extends Widget {
     return bubble;
   }
 
-  /** A notebook to borrow a kernel from: the focused one, else the last-used, else ANY open one.
-   *  Lets the chat work while an editor or the App Preview tab is focused. */
+  /** A notebook to borrow a (LIVE) kernel from: the one the user was in, else the focused one, else
+   *  any open notebook whose kernel is running. Lets the chat work while an editor/preview is focused
+   *  and avoids "No kernel is running" from a stale panel. */
   private _panel(): NotebookPanel | null {
-    if (this.tracker.currentWidget) {
-      return this.tracker.currentWidget;
+    const order = [this._snapPanel, this.tracker.currentWidget, this._lastPanel];
+    for (const p of order) {
+      if (p && !p.isDisposed && hasKernel(p)) {
+        this._lastPanel = p;
+        return p;
+      }
     }
-    if (this._lastPanel && !this._lastPanel.isDisposed) {
-      return this._lastPanel;
-    }
-    let found: NotebookPanel | null = null;
+    let withKernel: NotebookPanel | null = null;
+    let any: NotebookPanel | null = null;
     this.tracker.forEach(p => {
-      if (!found && !p.isDisposed) {
-        found = p;
+      if (p.isDisposed) {
+        return;
+      }
+      if (!any) {
+        any = p;
+      }
+      if (!withKernel && hasKernel(p)) {
+        withKernel = p;
       }
     });
-    this._lastPanel = found;
-    return found;
+    this._lastPanel = withKernel || any;
+    return this._lastPanel;
   }
 
   private async _submit(): Promise<void> {
@@ -1141,17 +1164,19 @@ class ChatPanel extends Widget {
       return;
     }
 
-    // Selection: prefer the snapshot taken when you reached for the chat (before the cell blurred).
+    // What the user is looking at — snapshotted when they reached for the chat (before the cell
+    // blurred), so "what's wrong with my code?" sees the focused cell even on a borrowed kernel.
     let context = '';
     let sel = this._lastSel;
     this._lastSel = null;
-    if (!sel) {
-      const c = panel.content.activeCell;
-      if (c) {
-        const r = selectionOf(c);
-        if (r.scope === 'selection') {
-          sel = { cell: c, from: r.from, to: r.to };
-        }
+    // The cell the user was on: the snapshot, else the borrowed panel's active cell.
+    const active: Cell | null =
+      (this._snapCell && !this._snapCell.isDisposed ? this._snapCell : null) || panel.content.activeCell;
+    this._snapCell = null;
+    if (!sel && active) {
+      const r = selectionOf(active);
+      if (r.scope === 'selection') {
+        sel = { cell: active, from: r.from, to: r.to };
       }
     }
     if (sel) {
@@ -1163,7 +1188,6 @@ class ChatPanel extends Widget {
       }
     }
     // The active cell's output/error, so the model can help fix problems.
-    const active = panel.content.activeCell;
     const output = active ? cellOutputText(active) : '';
     // Three modes: a QUESTION explains (no cell); a FIX edits in place (no new cell); only a
     // CREATE/build/add request writes a NEW cell. Debugging never spams cells.
