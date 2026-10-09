@@ -29,6 +29,7 @@ from pathlib import Path
 from .download import PROJECT_ROOT
 from .model import load_model
 from .pyhelp import ask_python  # grounded Python Q&A, available after `from harness.agent import *`
+from .snapshot import snapshot  # "see" the screen: screenshot the harness window + describe it
 from .repo import (  # clone & explore a git repo with RAG
     ask_repo,
     explain_file,

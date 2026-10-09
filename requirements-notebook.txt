@@ -25,3 +25,6 @@ psutil>=5.9 ; sys_platform != "darwin" or platform_machine != "arm64"
 
 # Reading images (both backends)
 Pillow>=10
+
+# Screen snapshot for the vision 'see what's on screen' feature (macOS)
+pyobjc-framework-Quartz; sys_platform == 'darwin'

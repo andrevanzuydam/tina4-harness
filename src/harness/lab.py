@@ -891,6 +891,18 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
     tina4_project = _detect_tina4(open_files, last_user, preview_urls or [])
 
+    # "snapshot" / "look at the screen" / "what's on screen" → screenshot the harness window and let
+    # the vision model SEE what's happening (the notebook or the tina4 App Preview).
+    if re.search(r"\b(snapshot|screenshot)\b", last_user, re.I) or \
+       re.search(r"\b(see|look at|check|view|what(?:'s| is| do you see)?)\b.{0,20}\bscreen\b", last_user, re.I):
+        try:
+            from . import snapshot as _snap
+
+            _status("📸 taking a screenshot…")
+            return _snap.snapshot(last_user, show=False)
+        except Exception as exc:
+            return f"Could not snapshot the screen: {exc}"
+
     # In a Tina4 project + a "add a route/page" request → WRITE the file(s) into the project
     # (not a notebook cell). The extension shows the code and refreshes the open App Preview.
     if tina4_project is not None and _is_tina4_file_request(last_user):
