@@ -1089,6 +1089,21 @@ class ChatPanel extends Widget {
     }
     this._input.value = '';
 
+    // "make/create/open a new notebook" is a JupyterLab action, not something the model should code.
+    if (/^\s*(make|create|new|start|open|add)\s+(me\s+)?(a\s+|an\s+)?(new\s+|blank\s+|fresh\s+)?notebook\b/i.test(text)
+        && !/\bcell\b/i.test(text)) {
+      this._messages.push({ role: 'user', content: text });
+      await this._append('user', text);
+      try {
+        await this.app.commands.execute('notebook:create-new');
+        await this._append('assistant', '✓ Created a new notebook.');
+      } catch (e: any) {
+        await this._append('assistant', 'Could not create a notebook: ' + e.message);
+      }
+      this._save();
+      return;
+    }
+
     const panel = this._panel();
 
     // If an image document is the active tab, chat ABOUT the image (vision model).
