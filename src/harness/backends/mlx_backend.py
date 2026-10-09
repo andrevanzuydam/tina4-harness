@@ -19,8 +19,42 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import os
+import tempfile
+
 from ..download import MODELS_DIR, _has_weights, disk_size_gb, ensure_model
 from ..model import GB, MLX_LOCAL_DIR, MLX_REPO, GenStats, HarnessModel, Settings
+
+
+def _prep_image(path: str) -> str:
+    """Normalise an image to the vision model's pixel sweet spot so fine text stays legible.
+
+    Resizes (up OR down) with a sharp LANCZOS filter so the total pixel count is ~HARNESS_VISION_PIXELS
+    (default 1,200,000 — empirically where the 2B reads small text best; bigger regresses). Keeps the
+    aspect ratio, writes a lossless WebP temp (smaller than PNG, identical pixels), and returns its
+    path — or the original path unchanged when already in band or on any error (PIL/WebP missing)."""
+    try:
+        from PIL import Image
+    except Exception:
+        return path
+    try:
+        target = int(os.environ.get("HARNESS_VISION_PIXELS", "1200000"))
+        im = Image.open(path).convert("RGB")
+        w, h = im.size
+        px = w * h
+        if px <= 0 or target <= 0:
+            return path
+        scale = (target / px) ** 0.5
+        if 0.92 <= scale <= 1.08:          # already close enough — don't touch it
+            return path
+        nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
+        im = im.resize((nw, nh), Image.LANCZOS)
+        fd, out = tempfile.mkstemp(suffix=".webp", prefix="harness-vision-")
+        os.close(fd)
+        im.save(out, "WEBP", lossless=True)
+        return out
+    except Exception:
+        return path
 
 
 class MLXModel(HarnessModel):
@@ -119,16 +153,31 @@ class MLXModel(HarnessModel):
 
     # --- vision (same model) ---------------------------------------------------------
     def describe(self, image, prompt: str = "Describe this image.", max_tokens: int = 512, temperature=None) -> str:
-        """Answer a question about an image — using the same weights as text generation."""
+        """Answer a question about an image — using the same weights as text generation.
+
+        The image is first normalised to the model's pixel sweet spot (see :func:`_prep_image`):
+        the Qwen2-VL processor only downscales very large images and never upscales small ones, so a
+        native screenshot or a small PNG arrives too small to read fine text. A sharp LANCZOS resize
+        to ~1.2M px makes small text legible (empirically, 'import antigravity' goes from garbled to
+        correct). The source FORMAT is irrelevant — PNG and lossless WebP are pixel-identical — so
+        this is the real quality lever, not PNG-vs-JPEG-vs-WebP."""
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template
 
+        img_path = _prep_image(str(image))
         temp = self.settings.temperature if temperature is None else temperature
         vprompt = apply_chat_template(self.processor, self.config, prompt, num_images=1)
-        result = generate(
-            self.model, self.processor, vprompt, image=[str(image)],
-            max_tokens=max_tokens, temperature=temp, verbose=False,
-        )
+        try:
+            result = generate(
+                self.model, self.processor, vprompt, image=[img_path],
+                max_tokens=max_tokens, temperature=temp, verbose=False,
+            )
+        finally:
+            if img_path != str(image):
+                try:
+                    Path(img_path).unlink()
+                except Exception:
+                    pass
         return result.text if hasattr(result, "text") else str(result)
 
     # --- telemetry -------------------------------------------------------------------
