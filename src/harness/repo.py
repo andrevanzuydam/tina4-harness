@@ -19,13 +19,18 @@ from pathlib import Path
 from .model import load_model
 
 
-def _repos_dir() -> Path:
-    """Clone into the NOTEBOOK's working directory (the 'notebook space') so it shows in the
-    file browser. Override with the HARNESS_REPOS_DIR env var."""
+def _notebook_root() -> Path:
+    """The grounding root: the NOTEBOOK FOLDER itself (the user's workspace). Cloned repos and tina4
+    apps all live here, flat — organised however the user likes, no forced 'repos/' sub-folder.
+    Override with the HARNESS_REPOS_DIR env var."""
     import os
 
     base = os.environ.get("HARNESS_REPOS_DIR")
-    return (Path(base) if base else Path.cwd() / "repos")
+    return Path(base) if base else Path.cwd()
+
+
+def _repos_dir() -> Path:  # backwards-compatible alias
+    return _notebook_root()
 # A repo can be ANY language — index every common text/source extension (BM25 is language-agnostic;
 # only the extension gates what gets read). Binary and vendored dirs are skipped (_SKIP_DIRS), and
 # index() caps file size, so a wide net is safe.
@@ -46,7 +51,9 @@ CODE_EXT = {
 }
 # Common files that carry no extension but are worth indexing.
 CODE_NAMES = {"Dockerfile", "Makefile", "Rakefile", "Gemfile", "Procfile", "CMakeLists.txt", "README"}
-_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", "target"}
+_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next",
+              "target", ".ipynb_checkpoints", ".tina4", ".tina4-docs", "logs", "site-packages",
+              ".mypy_cache", ".pytest_cache", ".ruff_cache", ".idea", ".vscode", "coverage"}
 
 _index = None
 _indexed_path = None
@@ -54,22 +61,46 @@ _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
 def clone(url: str, name: str | None = None, depth: int = 1) -> Path:
-    """Shallow-clone ``url`` into repos/<name> (reused if already present)."""
-    repos_dir = _repos_dir()
-    repos_dir.mkdir(parents=True, exist_ok=True)
+    """Shallow-clone ``url`` flat into the notebook folder as <name> (reused if already present),
+    and add it to .gitignore so the cloned code never pollutes the harness repo."""
+    base = _notebook_root()
+    base.mkdir(parents=True, exist_ok=True)
     name = name or url.rstrip("/").split("/")[-1].removesuffix(".git")
-    dest = repos_dir / name
+    dest = base / name
     if dest.exists() and any(dest.iterdir()):
         return dest  # already cloned
     subprocess.run(
         ["git", "clone", "--depth", str(depth), url, str(dest)],
         check=True, capture_output=True, text=True, timeout=600,
     )
+    _gitignore_dir(dest)
     return dest
 
 
-def index(path: Path | str, k: int = 5, max_words: int = 80):
-    """Index a repo's code with Groundwire (BM25, off-GPU). Returns the number of files indexed."""
+def _gitignore_dir(path: Path) -> None:
+    """Add a cloned/provisioned dir to the enclosing git repo's .gitignore (best-effort)."""
+    p = Path(path).resolve()
+    root = p
+    for _ in range(12):
+        if (root / ".git").exists():
+            break
+        if root.parent == root:
+            return
+        root = root.parent
+    gi = root / ".gitignore"
+    try:
+        rel = str(p.relative_to(root)) + "/"
+        existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
+        if rel not in existing:
+            with gi.open("a", encoding="utf-8") as f:
+                f.write(f"\n# Cloned repo (local artifact)\n{rel}\n")
+    except Exception:
+        pass
+
+
+def index(path: Path | str, k: int = 5, max_words: int = 80, max_files: int = 6000):
+    """Index a folder's code with Groundwire (BM25, off-GPU). Returns the number of files indexed.
+    Bounded by ``max_files`` so grounding a whole workspace stays fast; skips vendored/venv dirs."""
     from groundwire import Groundwire
 
     global _index, _indexed_path
@@ -77,6 +108,8 @@ def index(path: Path | str, k: int = 5, max_words: int = 80):
     gw = Groundwire(memory="bm25", k=k, max_words=max_words)
     count = 0
     for f in path.rglob("*"):
+        if count >= max_files:
+            break
         if not f.is_file():
             continue
         if f.suffix.lower() not in CODE_EXT and f.name not in CODE_NAMES:
@@ -96,28 +129,31 @@ def index(path: Path | str, k: int = 5, max_words: int = 80):
 
 
 def open_repo(url: str, name: str | None = None, depth: int = 1):
-    """Clone (if needed) and index a repo. Returns (path, files_indexed)."""
+    """Clone a repo flat into the notebook folder, then GROUND on the whole workspace (so the new
+    repo and everything else in the notebook space is searchable). Returns (clone_path, files)."""
     dest = clone(url, name=name, depth=depth)
-    n = index(dest)
+    n = index(_notebook_root())
     return dest, n
 
 
+def ground(path: Path | str | None = None) -> int:
+    """Index a folder for grounding (defaults to the notebook root — the whole workspace). The user
+    can point this at any folder they've organised; nothing assumes a 'repos/' layout."""
+    return index(path or _notebook_root())
+
+
 def ensure_indexed() -> bool:
-    """If nothing is indexed in this kernel, index the most recent repo already cloned on disk."""
+    """Ground on the NOTEBOOK ROOT (the whole workspace) if nothing is indexed in this kernel yet."""
     global _index
     if _index is not None:
         return True
-    cands: list[Path] = []
-    for base in (_repos_dir(), Path.cwd() / "repos", Path.cwd().parent / "repos"):
-        try:
-            if base.exists():
-                cands += [d for d in base.iterdir() if d.is_dir() and any(d.iterdir())]
-        except Exception:
-            pass
-    if not cands:
+    root = _notebook_root()
+    try:
+        if not root.exists() or not any(root.iterdir()):
+            return False
+    except Exception:
         return False
-    index(max(cands, key=lambda p: p.stat().st_mtime))
-    return True
+    return index(root) > 0
 
 
 def search_repo(query: str, k: int | None = None) -> list[tuple[str, float]]:

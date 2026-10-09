@@ -16,8 +16,9 @@ export HARNESS_THREADS="${HARNESS_THREADS:-8}"
 export HARNESS_MODEL_SERVER="http://127.0.0.1:${HARNESS_MODEL_PORT}"
 JUPYTER_PORT="${JUPYTER_PORT:-8890}"
 NB_ROOT="${NB_ROOT:-$ROOT/notebooks}"
-# Always clone git repos into the notebook space (browsable in the file tree), whatever the cwd.
-export HARNESS_REPOS_DIR="${HARNESS_REPOS_DIR:-$NB_ROOT/repos}"
+# The notebook folder IS the grounding root: repos and tina4 apps live flat here (no repos/
+# sub-folder), and grounding indexes this whole workspace. Clones land here, whatever the cwd.
+export HARNESS_REPOS_DIR="${HARNESS_REPOS_DIR:-$NB_ROOT}"
 
 mkdir -p "$ROOT/logs" "$NB_ROOT"
 
