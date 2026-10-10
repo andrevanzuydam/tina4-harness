@@ -102,7 +102,10 @@ def test_explain_a_concept_concisely():
 def test_add_comments_edits_the_cell():
     mode, out = chat("add comments to this", context=GOOD)
     code = code_of(out)
-    assert valid(code) and "def greet" in code and "#" in code
+    # "comments" = any added documentation: an inline # comment OR a docstring (both are valid, and
+    # which one a model reaches for is a style choice — the 2B tends to #, Gemma to a docstring).
+    documented = "#" in code or '"""' in code or "'''" in code
+    assert valid(code) and "def greet" in code and documented
 
 
 def test_add_type_hints():

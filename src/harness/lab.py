@@ -283,13 +283,29 @@ def _cap_prose(text: str, limit: int = 700) -> str:
     return text
 
 
-def _starts_with_code(text: str) -> bool:
-    """The reply OPENS with a code block (after at most a short lead-in sentence) — i.e. the model
-    chose to WRITE CODE rather than explain. This is the routing signal: the model reliably picks the
-    right FORM for a request, so its own output decides ask-vs-code (no brittle classifier needed)."""
+def _starts_with_code(text: str, strict: bool = True) -> bool:
+    """The reply is a CODE answer (not an explanation) — i.e. the model chose to WRITE CODE. This is
+    the routing signal: the model reliably picks the right FORM, so its own output decides ask-vs-code
+    (no brittle classifier needed).
+
+    ``strict`` (the default, used when the caller asked a QUESTION): the reply must OPEN with a code
+    block after at most a short lead-in, so a prose explanation that merely contains a code example
+    stays an explanation. Non-strict (the caller already intended CODE): a single-line caption lead
+    ("Here is the code, split into two cells:") is allowed when the reply is predominantly code — some
+    models (e.g. Gemma) caption their code where the terser 2B just emits it."""
     s = (text or "").lstrip()
     f = s.find("```")
-    return f != -1 and len(s[:f].strip()) <= 60
+    if f == -1:
+        return False
+    lead = s[:f].strip()
+    if len(lead) <= 60:
+        return True
+    if strict:
+        return False
+    # Non-strict: a one-line caption (no paragraph break) in front of code that dominates the reply.
+    code_chars = sum(len(m) for m in re.findall(r"```.*?```", s, re.S))
+    prose_chars = max(1, len(s) - code_chars)
+    return len(lead) <= 140 and "\n\n" not in lead and code_chars >= prose_chars
 
 
 def _with_marker(mark: str, text: str) -> str:
@@ -1907,7 +1923,9 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     # question, so its own answer decides ask-vs-code — a misrouted intent from the UI self-corrects
     # here. (Help/fix/assertion already fixed intent to 'ask' via cell_help; leave those.)
     if not cell_help:
-        intent = "code" if _starts_with_code(reply) else "ask"
+        # Strict when the caller asked a QUESTION (keep explanations as prose); looser when they
+        # already intended code, so a captioned code reply (common on Gemma) still renders as code.
+        intent = "code" if _starts_with_code(reply, strict=(intent == "ask")) else "ask"
     if intent == "code":
         _status("🔎 checking syntax…")
     if intent == "ask":

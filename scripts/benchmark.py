@@ -110,8 +110,9 @@ def t_explain_code():
 def t_add_comments():
     mode, out = _chat("add comments to this", context=GOOD, intent="code")
     c = _code(out)
-    ok = _valid(c) and "def greet" in c and "#" in c
-    return ok, "commented, still valid" if ok else "lost function or no comment"
+    documented = "#" in c or '"""' in c or "'''" in c  # a # comment OR a docstring both count
+    ok = _valid(c) and "def greet" in c and documented
+    return ok, "documented, still valid" if ok else "lost function or no comment/docstring"
 
 
 def t_add_type_hints():
