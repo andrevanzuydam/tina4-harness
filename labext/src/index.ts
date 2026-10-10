@@ -1260,17 +1260,22 @@ class ChatPanel extends Widget {
 
     let panel = this._panel();
 
-    // If an image document is the active tab AND the message is actually ABOUT it, chat about the
-    // image (vision model). A bare greeting or a code request with an image tab open is NOT a vision
-    // query — it must fall through to normal handling, not get hijacked into "about <file>".
+    // If an image document is the active tab AND the message is actually ABOUT looking at it, chat
+    // about the image (vision model). This needs an AFFIRMATIVE image signal — a generic question
+    // word ("how/what") is not enough — AND must NOT be a notebook/code action: "How about in a new
+    // notebook" or "write a function" are workspace commands, never a question about the picture.
     const imagePath = this._currentImagePath();
     const imageName = imagePath ? imagePath.split('/').pop()!.toLowerCase() : '';
+    // Competing intent: a Jupyter or code action is about the workspace, not the picture.
+    const notVision =
+      /\b(notebook|cell|kernel|run|re-?run|execute|write|create|make|implement|build|code|coding|function|method|class|script|program|refactor|fix|edit|insert|append|install|import)\b/i.test(text);
+    // Affirmative "look at the image" signal.
+    const imageNoun = /\b(image|picture|photo|pic|comic|diagram|chart|screenshot|figure|drawing|graph|caption|logo|meme|snapshot|sketch)\b/i.test(text);
+    const perceptionVerb = /\b(see|look|view|read|describe|transcribe|identify|recogni[sz]e|zoom|depict|visible|colou?rs?)\b/i.test(text);
+    const asksWhatsInIt = /\bwhat(?:'?s| is| are| does)?\b.*\b(in|on|this|that|the|it)\b.*\b(image|picture|photo|comic|screenshot|figure|drawing|it)\b/i.test(text);
+    const namesFile = !!imageName && text.toLowerCase().includes(imageName);  // full "python.png"
     const aboutImage =
-      !!imagePath && (
-        text.toLowerCase().includes(imageName) ||
-        /\b(image|picture|photo|pic|comic|diagram|chart|screenshot|figure|drawing|graph|scene|caption|colou?rs?|visible|contains?|says?)\b/i.test(text) ||
-        /\b(read|see|look|describe|show me|identify|recogni[sz]e|what'?s?|whats|what|why|how|who|where|when|which|explain|mean|tell me)\b/i.test(text) ||
-        /\b(this|that|it|here|the (text|picture|image|photo|drawing|comic))\b/i.test(text));
+      !!imagePath && !notVision && (imageNoun || perceptionVerb || asksWhatsInIt || namesFile);
     if (imagePath && aboutImage) {
       this._messages.push({ role: 'user', content: text });
       await this._append('user', text + `\n\n🖼 about ${imagePath}`);
@@ -1465,6 +1470,10 @@ class ChatPanel extends Widget {
       || /\b(add|insert|include|put|wrap|turn|convert|rename)\b[^.?!]*\b(to|into|in|around|on|for)\b[^.?!]*\b(my|the|this|that)\s+(code|cell|function|method|class|script|loop|snippet)\b/i.test(text);
     // An explicit "in a cell" / "new cell" means they want a CELL — honour it even over a question.
     const wantsCell = /\b(in|into|as|to)\s+a?\s*(new\s+)?cell\b/i.test(text) || /\bnew cell\b/i.test(text);
+    // "(do X) in a new/fresh/another notebook" — a soft request (not the bare "make a notebook"
+    // intercept above) to put the code into a FRESH notebook. It is a code action, so it wins over a
+    // question phrasing ("How about in a new notebook?") and we create the notebook before placing.
+    const wantsNewNotebook = /\b(new|fresh|another|separate|blank|different)\s+notebook\b/i.test(text);
     const hasError = /error|traceback/i.test(output);
     const isQuestion =
       /\b(what|why|how|explain|mean|describe|tell me|overview|who|when|where|difference|compare|summar)\b/i.test(text) ||
@@ -1484,6 +1493,7 @@ class ChatPanel extends Widget {
     let mode: 'ask' | 'fix' | 'create' =
       bareHelp ? 'ask'
       : isFix ? 'fix'
+      : wantsNewNotebook ? 'create'   // "do it in a new notebook" → write code into a fresh one
       : isQuestion ? 'ask'
       : (modifiesExisting && !!active) ? 'fix'   // modifying existing code → edit the cell in place
       : wantsCell ? 'create'
@@ -1519,6 +1529,16 @@ class ChatPanel extends Widget {
     if (panel && ctxCell && context && context.trim() && (sel || mode === 'fix' || hasError || bareHelp)) {
       const n = panel.content.widgets.indexOf(ctxCell) + 1;
       await this._append('context', `Taking a look at Cell ${n}${hasError ? ' — fixing the error' : ''}`);
+    }
+
+    // "…in a new notebook" → open a FRESH notebook now (even if one is already open) so the code
+    // lands there; _ensureNotebook(null) always creates a new one.
+    if (wantsNewNotebook) {
+      try {
+        panel = await this._ensureNotebook(null);
+      } catch {
+        /* if it can't be created, fall through — the brain still answers */
+      }
     }
 
     this._send.disabled = true;

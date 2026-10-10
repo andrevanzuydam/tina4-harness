@@ -30,9 +30,16 @@ and edit code in the right place, run it, manage cells, and converse — without
       signal that excludes it (d9679f7).
 - [x] `_tidy_chat` missing `as_tool` arg swallowed the multi-cell split (TypeError) — fixed (d9679f7).
 - [x] `hi` with an image open → forced vision — gated to real image questions (d9679f7).
+- [x] "How about in a new notebook" (image open) → mis-routed to vision and HALLUCINATED an image
+      description. The gate triggered on a bare question word ("how") / deictic. Tightened: vision
+      needs an affirmative image signal (image noun, perception verb, "what's in the picture", or the
+      filename) AND must not be a notebook/code action.
+- [x] "…in a new notebook" did not create a notebook. Added `wantsNewNotebook`: open a fresh notebook
+      and route as code so the brain writes the code into it.
 
 ## Commits
 - d9679f7  multi-cell code+test, bulk notebook ops, repo-routing + vision-intercept fixes
 - a3d9c1e  decouple the harness brain from an open notebook (own kernel + scratch notebook on demand)
+- (pending) vision gate tightened + "in a new notebook" creates & fills a fresh notebook
 
 ## Status: Complete
