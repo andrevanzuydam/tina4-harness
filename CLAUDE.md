@@ -22,15 +22,17 @@ If a fix feels like whack-a-mole, stop and solve the real cause.
 
 ## Load the Tina4 skills — even though this is NOT a tina4 app
 
-This repo is a harness, not a tina4-python application, so do **not** impose the full tina4 app
-layout (`plan/`, `src/routes/`, `src/orm/`, `TINA4.md`) on it. But it uses tina4 throughout, so
-**load the tina4 skills and apply their conventions**:
+This repo is a harness, not a tina4-python application, so do **not** impose the tina4 app RUNTIME
+layout (`src/routes/`, `src/orm/`, `TINA4.md`) on it. But it uses tina4 throughout AND follows the
+tina4-developer-python **working method**, so **load the tina4 skills and apply their conventions**:
 
 - `tina4-cli` — for anything touching the `tina4` client (provisioning, `tina4 serve`, docs).
 - `tina4-developer-python` — for the working method and discipline.
 
 Conventions that DO apply here (the spirit, not the scaffolding):
 
+- **Plan-driven** — keep a proper `plan/` folder: `plan/MASTER.md` (dashboard) + one plan per feature
+  with Scope / Tests / Bugs / Commits. Update the plan file in the SAME turn you claim progress.
 - **🤖 marker** — begin replies with 🤖 while a tina4 skill is active (and the harness chat prints
   🤖 when it's in "tina4 mode" — a tina4 project is detected). 💥 **Bazinga!** on an *earned* win
   (a green test run on a real dependency, a feature verified end to end) — never faked.

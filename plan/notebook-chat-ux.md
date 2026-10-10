@@ -1,0 +1,38 @@
+# Feature: Notebook chat UX
+
+**Outcome:** the chat does what a user working in Python + Jupyter actually needs, offline — write
+and edit code in the right place, run it, manage cells, and converse — without fighting the tool.
+
+## Scope
+- [x] Multi-cell requests ("add 2 cells — one for code, one to test it") emit one block per cell;
+      the test is a REAL assert, proven to pass by running it (characterization-test fallback when
+      the model guesses a wrong value); the test cell never redefines the function.
+- [x] Bulk notebook ops (Jupyter commands, not model work): clear all cells (with Undo), clear all
+      outputs, run all cells.
+- [x] Edit-in-place vs create: modifying existing code edits the cell; cell-number targeting; delete
+      cell N.
+- [x] Decouple the brain from an open notebook: the chat panel runs on its own kernel when no
+      notebook is open, so conversation + image questions work with nothing open; a scratch notebook
+      is created only when there's code to place.
+- [x] Vision intercept gated: a bare greeting with an image tab open is NOT a vision query; only a
+      message that refers to the image routes to the vision model.
+- [x] A code-authoring request ("write me a method … to test the code") is not hijacked to repo Q&A
+      by an incidental "the code".
+
+## Tests (real — no mocks)
+- [x] `tests/test_scenarios.py::test_add_two_cells_code_and_test` — two cells, real passing test, no
+      redefinition, runs clean.
+- [x] Scenario suite covers fix-from-traceback, write/explain/edit/convert/call/test, vision-read.
+- [x] Deterministic routing/validation helpers in `tests/test_chat_logic.py`.
+
+## Bugs
+- [x] "write me a method … test the code" hijacked to repo Q&A by "the code" — added a code-authoring
+      signal that excludes it (d9679f7).
+- [x] `_tidy_chat` missing `as_tool` arg swallowed the multi-cell split (TypeError) — fixed (d9679f7).
+- [x] `hi` with an image open → forced vision — gated to real image questions (d9679f7).
+
+## Commits
+- d9679f7  multi-cell code+test, bulk notebook ops, repo-routing + vision-intercept fixes
+- a3d9c1e  decouple the harness brain from an open notebook (own kernel + scratch notebook on demand)
+
+## Status: Complete
