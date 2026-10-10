@@ -12,6 +12,7 @@
 import { JupyterFrontEnd, JupyterFrontEndPlugin } from '@jupyterlab/application';
 import { Dialog, ICommandPalette, Notification, showDialog } from '@jupyterlab/apputils';
 import { INotebookTracker, NotebookActions, NotebookPanel } from '@jupyterlab/notebook';
+import { Kernel } from '@jupyterlab/services';
 import { Cell } from '@jupyterlab/cells';
 import { IRenderMimeRegistry } from '@jupyterlab/rendermime';
 import { LabIcon } from '@jupyterlab/ui-components';
@@ -34,17 +35,19 @@ const chatIcon = new LabIcon({
     '</svg>'
 });
 
-/** Run `__harness_edit(kind, payload)` in the kernel and return the model's text. */
+/** Run `__harness_edit(kind, payload)` in the kernel and return the model's text. The harness brain
+ *  (routing, grounding, validation) runs in ANY Python kernel — it does not need an open notebook,
+ *  only a process to run in. The caller passes whichever kernel it has: an open notebook's, or the
+ *  chat panel's own standalone kernel. */
 async function kernelEdit(
-  panel: NotebookPanel,
+  kernel: Kernel.IKernelConnection | null | undefined,
   kind: string,
   payload: Record<string, unknown>,
   onStatus?: (s: string) => void,
   onStream?: (delta: string) => void
 ): Promise<string> {
-  const kernel = panel.sessionContext.session?.kernel;
   if (!kernel) {
-    throw new Error('No kernel is running for this notebook.');
+    throw new Error('No kernel available to run the harness.');
   }
   const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
   // Make `harness` importable in ANY fresh kernel, without depending on the notebook's setup cell
@@ -592,6 +595,9 @@ class ChatPanel extends Widget {
   private _ctxLabel: HTMLSpanElement;
   private _lastPanel: NotebookPanel | null = null;
   private _busyPanel: NotebookPanel | null = null;
+  private _ownKernel: Kernel.IKernelConnection | null = null;  // the panel's own kernel (no notebook)
+  private _ownKernelStarting: Promise<Kernel.IKernelConnection> | null = null;
+  private _busyKernel: Kernel.IKernelConnection | null = null;  // the kernel the current turn runs on
   private _lastSel: { cell: Cell; from: number; to: number } | null = null;
   private _snapCell: Cell | null = null;     // the cell the user was on when they reached for chat
   private _snapPanel: NotebookPanel | null = null;  // the notebook they were in (with a live kernel)
@@ -722,7 +728,10 @@ class ChatPanel extends Widget {
   }
 
   /** The notebook's existing code (so the model reuses names instead of redefining them). */
-  private _notebookCode(panel: NotebookPanel): string {
+  private _notebookCode(panel: NotebookPanel | null): string {
+    if (!panel) {
+      return '';
+    }
     const out: string[] = [];
     for (const c of panel.content.widgets) {
       if (c.model.type === 'code') {
@@ -799,16 +808,22 @@ class ChatPanel extends Widget {
   }
 
   private async _loadHistory(panel: NotebookPanel, key: string): Promise<{ role: string; content: string }[]> {
-    const txt = await kernelEdit(panel, 'chat_load', { key });
+    const kernel = panel.sessionContext.session?.kernel;
+    if (!kernel) {
+      return [];
+    }
+    const txt = await kernelEdit(kernel, 'chat_load', { key });
     const arr = JSON.parse(txt);
     return Array.isArray(arr) ? arr : [];
   }
 
   /** Persist the current conversation to .tina4/chat/ (best-effort). */
   private _save(): void {
-    const panel = this.tracker.currentWidget;
-    if (panel) {
-      void kernelEdit(panel, 'chat_save', { key: this._currentKey, messages: this._messages }).catch(() => undefined);
+    const kernel =
+      this.tracker.currentWidget?.sessionContext.session?.kernel ??
+      (this._ownKernel && !this._ownKernel.isDisposed ? this._ownKernel : null);
+    if (kernel) {
+      void kernelEdit(kernel, 'chat_save', { key: this._currentKey, messages: this._messages }).catch(() => undefined);
     }
   }
 
@@ -1172,6 +1187,55 @@ class ChatPanel extends Widget {
     return this._lastPanel;
   }
 
+  /** A kernel to run the harness brain in. Prefers an open notebook's kernel (so execution-based
+   *  validation sees the user's live cells); otherwise starts and reuses the chat panel's OWN
+   *  standalone kernel — so chat and image questions work with NO notebook open. The model server
+   *  runs independently; this is just the small Python process the routing/validation logic needs. */
+  private async _brainKernel(): Promise<Kernel.IKernelConnection> {
+    const panel = this._panel();
+    const nbKernel = panel?.sessionContext.session?.kernel;
+    if (nbKernel) {
+      return nbKernel;
+    }
+    if (this._ownKernel && !this._ownKernel.isDisposed) {
+      return this._ownKernel;
+    }
+    if (!this._ownKernelStarting) {
+      this._ownKernelStarting = this.app.serviceManager.kernels
+        .startNew({ name: 'python3' })
+        .then(k => {
+          this._ownKernel = k;
+          this._ownKernelStarting = null;
+          return k;
+        })
+        .catch(e => {
+          this._ownKernelStarting = null;
+          throw e;
+        });
+    }
+    return this._ownKernelStarting;
+  }
+
+  /** A notebook to place code into — the open one, or a freshly created scratch notebook. Only
+   *  called when there is actually code to insert, so pure chat never spawns a notebook. */
+  private async _ensureNotebook(panel: NotebookPanel | null): Promise<NotebookPanel> {
+    if (panel && !panel.isDisposed) {
+      return panel;
+    }
+    const created = (await this.app.commands.execute('notebook:create-new')) as NotebookPanel | undefined;
+    const p = created && !created.isDisposed ? created : this.tracker.currentWidget;
+    if (!p) {
+      throw new Error('Could not open a notebook to place the code.');
+    }
+    try {
+      await p.sessionContext.ready;
+    } catch {
+      /* kernel may still be coming up — placement still works, running may wait */
+    }
+    this._lastPanel = p;
+    return p;
+  }
+
   private async _submit(): Promise<void> {
     const text = this._input.value.trim();
     if (!text) {
@@ -1194,7 +1258,7 @@ class ChatPanel extends Widget {
       return;
     }
 
-    const panel = this._panel();
+    let panel = this._panel();
 
     // If an image document is the active tab AND the message is actually ABOUT it, chat about the
     // image (vision model). A bare greeting or a code request with an image tab open is NOT a vision
@@ -1210,14 +1274,11 @@ class ChatPanel extends Widget {
     if (imagePath && aboutImage) {
       this._messages.push({ role: 'user', content: text });
       await this._append('user', text + `\n\n🖼 about ${imagePath}`);
-      if (!panel) {
-        await this._append('assistant', 'Open a notebook too, so I have a kernel to run the vision model.');
-        return;
-      }
       this._send.disabled = true;
       const pending = await this._append('assistant', 'looking at the image…');
       try {
-        const answer = await kernelEdit(panel, 'vision', { image: imagePath, question: text }, (s: string) => {
+        const kernel = await this._brainKernel();  // own kernel is fine — vision needs no notebook
+        const answer = await kernelEdit(kernel, 'vision', { image: imagePath, question: text }, (s: string) => {
           pending.textContent = s;
         });
         pending.remove();
@@ -1233,17 +1294,14 @@ class ChatPanel extends Widget {
       return;
     }
 
-    if (!panel) {
-      this._messages.push({ role: 'user', content: text });
-      await this._append('user', text);
-      await this._append('assistant', 'Open a notebook first — I use its kernel.');
-      return;
-    }
+    // No notebook open is fine for conversation and image questions — the harness brain runs on the
+    // panel's own kernel (started on demand). A notebook is created later only if there's code to
+    // place. The notebook-OPERATION branches below (delete/clear/run cells) still need one.
 
     // "remove/delete cell N" (the CELL itself is the object, not something inside it) → delete that
     // whole cell. ("remove X from cell N" is an edit and falls through to the normal flow.)
     const delMatch = text.match(/^\s*(?:please\s+)?(?:remov\w*|delet\w*|drop|get rid of)\s+(?:the\s+)?cell\s*#?\s*(\d+)\s*[.!]?\s*$/i);
-    if (delMatch) {
+    if (panel && delMatch) {
       const n = parseInt(delMatch[1], 10);
       const cells = panel.content.widgets;
       const byExec = cells.filter(c => ((c.model as { executionCount?: number }).executionCount) === n);
@@ -1286,8 +1344,8 @@ class ChatPanel extends Widget {
 
     // --- bulk notebook actions (Jupyter operations, not model work) ---
     // "clear all the cells" / "delete all cells" / "empty the notebook" → remove every cell.
-    if (/^\s*(?:please\s+)?(?:clear|delete|remove|empty|wipe|reset)\s+(?:all\s+)?(?:the\s+)?cells?\s*[.!?]*\s*$/i.test(text)
-        || /^\s*(?:please\s+)?(?:clear|empty|wipe|reset|blank)\s+(?:the\s+)?notebook\s*[.!?]*\s*$/i.test(text)) {
+    if (panel && (/^\s*(?:please\s+)?(?:clear|delete|remove|empty|wipe|reset)\s+(?:all\s+)?(?:the\s+)?cells?\s*[.!?]*\s*$/i.test(text)
+        || /^\s*(?:please\s+)?(?:clear|empty|wipe|reset|blank)\s+(?:the\s+)?notebook\s*[.!?]*\s*$/i.test(text))) {
       this._messages.push({ role: 'user', content: text });
       await this._append('user', text);
       const model = panel.content.model;
@@ -1327,7 +1385,7 @@ class ChatPanel extends Widget {
       return;
     }
     // "clear (all) outputs" → clear every cell's output.
-    if (/\bclear\s+(?:all\s+)?(?:the\s+)?(?:cell\s+)?outputs?\b/i.test(text)) {
+    if (panel && /\bclear\s+(?:all\s+)?(?:the\s+)?(?:cell\s+)?outputs?\b/i.test(text)) {
       this._messages.push({ role: 'user', content: text });
       await this._append('user', text);
       try {
@@ -1340,7 +1398,7 @@ class ChatPanel extends Widget {
       return;
     }
     // "run all (the) cells" / "run everything" → run the whole notebook.
-    if (/^\s*(?:please\s+)?(?:run|execute|rerun)\s+(?:all|everything)(?:\s+(?:of\s+)?(?:the\s+)?cells?)?\s*[.!?]*\s*$/i.test(text)) {
+    if (panel && /^\s*(?:please\s+)?(?:run|execute|rerun)\s+(?:all|everything)(?:\s+(?:of\s+)?(?:the\s+)?cells?)?\s*[.!?]*\s*$/i.test(text)) {
       this._messages.push({ role: 'user', content: text });
       await this._append('user', text);
       try {
@@ -1360,7 +1418,7 @@ class ChatPanel extends Widget {
     this._lastSel = null;
     // The cell the user was on: the snapshot, else the borrowed panel's active cell.
     const active: Cell | null =
-      (this._snapCell && !this._snapCell.isDisposed ? this._snapCell : null) || panel.content.activeCell;
+      (this._snapCell && !this._snapCell.isDisposed ? this._snapCell : null) || (panel ? panel.content.activeCell : null);
     this._snapCell = null;
     // "remove from cell 3" / "edit cell 2" → target THAT cell, whatever is selected. "Cell 3" is
     // resolved the way a user most likely means it: first the cell whose [3] execution count shows
@@ -1368,7 +1426,7 @@ class ChatPanel extends Widget {
     // position (which matches the "Cell N" labels the harness prints).
     const cellNumMatch = text.match(/\bcell\s*#?\s*(\d+)\b/i);
     let targetCell: Cell | null = null;
-    if (cellNumMatch) {
+    if (cellNumMatch && panel) {
       const n = parseInt(cellNumMatch[1], 10);
       const cells = panel.content.widgets;
       const byExec = cells.filter(c => ((c.model as { executionCount?: number }).executionCount) === n);
@@ -1458,7 +1516,7 @@ class ChatPanel extends Widget {
     await this._append('user', text);
     // A terse note of what it's looking at — only when it's actually working on an existing cell.
     const ctxCell: Cell | null = targetCell ?? (sel ? sel.cell : active);
-    if (ctxCell && context && context.trim() && (sel || mode === 'fix' || hasError || bareHelp)) {
+    if (panel && ctxCell && context && context.trim() && (sel || mode === 'fix' || hasError || bareHelp)) {
       const n = panel.content.widgets.indexOf(ctxCell) + 1;
       await this._append('context', `Taking a look at Cell ${n}${hasError ? ' — fixing the error' : ''}`);
     }
@@ -1466,6 +1524,10 @@ class ChatPanel extends Widget {
     this._send.disabled = true;
     this._stop.style.display = '';
     this._busyPanel = panel;
+    // Run the brain on the notebook's kernel when one is open (so validation sees the live cells),
+    // else on the chat panel's own kernel — no notebook required for conversation.
+    const brainKernel = await this._brainKernel();
+    this._busyKernel = brainKernel;
     // A tidy "working" bubble: a spinner + the current status, and a calm streaming body below —
     // instead of one bubble flipping between status text and a jittery raw-token tail (very visible
     // on a slow machine). The status reads the phase; the body fills in as the answer streams.
@@ -1487,7 +1549,7 @@ class ChatPanel extends Widget {
     let streamed = '';
     try {
       let reply = await kernelEdit(
-        panel,
+        brainKernel,
         'chat',
         {
           messages: this._messages,
@@ -1568,12 +1630,13 @@ class ChatPanel extends Widget {
       // An example/call: add a NEW cell that calls existing code and RUN it (unless it reads stdin).
       if (reply.startsWith(RUN_SENTINEL)) {
         const { prose, blocks } = splitCode(reply.slice(RUN_SENTINEL.length));
+        const nb = await this._ensureNotebook(panel);
         for (const code of blocks) {
-          const cell = insertBelowWithSource(panel, code);
-          panel.content.activeCellIndex = panel.content.widgets.indexOf(cell);
+          const cell = insertBelowWithSource(nb, code);
+          nb.content.activeCellIndex = nb.content.widgets.indexOf(cell);
           const readsInput = code.split('\n').some(l => /\binput\s*\(/.test(l) && !/^\s/.test(l) && !l.trimStart().startsWith('#'));
           if (!readsInput) {
-            await runCell(panel, cell);
+            await runCell(nb, cell);
           }
         }
         await this._append('assistant', meaningfulProse(prose) || 'Added a cell.');
@@ -1584,9 +1647,10 @@ class ChatPanel extends Widget {
       // A "load <file>" request: drop the file straight into a new cell — no pills, any mode.
       if (reply.startsWith(INSERT_SENTINEL)) {
         const { prose, blocks } = splitCode(reply.slice(INSERT_SENTINEL.length));
+        const nb = await this._ensureNotebook(panel);
         for (const code of blocks) {
-          const cell = insertBelowWithSource(panel, code);
-          panel.content.activeCellIndex = panel.content.widgets.indexOf(cell);
+          const cell = insertBelowWithSource(nb, code);
+          nb.content.activeCellIndex = nb.content.widgets.indexOf(cell);
         }
         await this._append('assistant', meaningfulProse(prose) || 'Loaded into a cell.');
         this._save();
@@ -1648,7 +1712,7 @@ class ChatPanel extends Widget {
         }
         const fixCell: Cell | null = sel ? sel.cell : active;
         const code = blocks.length ? blocks[blocks.length - 1] : '';
-        if (fixCell && code) {
+        if (panel && fixCell && code) {
           await this._offerFix(panel, code, fixCell);
         }
         this._save();
@@ -1658,7 +1722,7 @@ class ChatPanel extends Widget {
       if (mode === 'ask') {
         // A question or a plain "help": show the explanation in the chat, insert nothing, and NEVER
         // offer a fix — only a FIX_SENTINEL (a validated fix) does that. An explanation that happens
-        // to echo the code must not turn into an Apply button.
+        // to echo the code must not turn into an Apply button. No notebook needed.
         await this._append('assistant', meaningfulProse(reply) || '(no reply)');
       } else {
         const { prose, blocks } = splitCode(reply);
@@ -1666,11 +1730,13 @@ class ChatPanel extends Widget {
         if (mp) {
           await this._append('assistant', mp);
         }
+        // There is code to place → make sure a notebook exists (created on demand if none is open).
+        const nb = blocks.length ? await this._ensureNotebook(panel) : panel;
         for (const code of blocks) {
-          if (mode === 'fix') {
-            await this._applyFix(panel, code, sel, targetCell);   // edit in place — never append
-          } else {
-            await this._offerCode(panel, code, sel, false);
+          if (mode === 'fix' && nb) {
+            await this._applyFix(nb, code, sel, targetCell);   // edit in place — never append
+          } else if (nb) {
+            await this._offerCode(nb, code, sel, false);
           }
         }
         if (!mp && !blocks.length) {
@@ -1685,6 +1751,7 @@ class ChatPanel extends Widget {
       this._send.disabled = false;
       this._stop.style.display = 'none';
       this._busyPanel = null;
+      this._busyKernel = null;
     }
   }
 
@@ -1702,7 +1769,7 @@ class ChatPanel extends Widget {
 
   /** Stop the running generation by interrupting the kernel (lab.py returns the partial text). */
   private _stopGeneration(): void {
-    const kernel = this._busyPanel?.sessionContext.session?.kernel;
+    const kernel = this._busyKernel ?? this._busyPanel?.sessionContext.session?.kernel;
     if (kernel) {
       void kernel.interrupt().catch(() => undefined);
     }
@@ -1751,7 +1818,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         const code = cell.model.sharedModel.getSource();
         const id = Notification.emit('Harness: checking code…', 'in-progress');
         try {
-          const review = await kernelEdit(panel, 'check', { code, notebook: collectNotebookCode(panel) });
+          const review = await kernelEdit(panel.sessionContext.session?.kernel, 'check', { code, notebook: collectNotebookCode(panel) });
           Notification.dismiss(id);
           // Show the review AND an editable copy of the cell — Apply writes it back and runs.
           const edited = await editCodeDialog(rendermime, 'Code review — edit & apply', code, review);
@@ -1783,7 +1850,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         const id = Notification.emit('Harness: writing a cell…', 'in-progress');
         let code: string;
         try {
-          code = await kernelEdit(panel, 'create', { prompt });
+          code = await kernelEdit(panel.sessionContext.session?.kernel, 'create', { prompt });
           Notification.dismiss(id);
         } catch (e: any) {
           Notification.update({ id, message: `Harness: ${e.message}`, type: 'error', autoClose: 5000 });
@@ -1820,7 +1887,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         const id = Notification.emit(`Harness: fixing ${scope}…`, 'in-progress');
         let fixed: string;
         try {
-          fixed = await kernelEdit(panel, 'fix', { code: target, instruction });
+          fixed = await kernelEdit(panel.sessionContext.session?.kernel, 'fix', { code: target, instruction });
           Notification.dismiss(id);
         } catch (e: any) {
           Notification.update({ id, message: `Harness: ${e.message}`, type: 'error', autoClose: 5000 });
@@ -1856,7 +1923,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         const id = Notification.emit('Harness: generating from your prompt…', 'in-progress');
         let code: string;
         try {
-          code = await kernelEdit(panel, 'create', { prompt });
+          code = await kernelEdit(panel.sessionContext.session?.kernel, 'create', { prompt });
           Notification.dismiss(id);
         } catch (e: any) {
           Notification.update({ id, message: `Harness: ${e.message}`, type: 'error', autoClose: 5000 });
