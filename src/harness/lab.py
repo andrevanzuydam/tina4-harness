@@ -897,6 +897,49 @@ def _looks_offline(msg: str) -> bool:
     ))
 
 
+_IMPORT_ERR = re.compile(
+    r"cannot import name ['\"](?P<name>\w+)['\"] from ['\"](?P<mod>[\w.]+)['\"]"
+    r"|No module named ['\"](?P<mod2>[\w.]+)['\"]"
+    r"|module ['\"](?P<mod3>[\w.]+)['\"] has no attribute ['\"](?P<attr>\w+)['\"]",
+    re.I,
+)
+
+
+def _ground_import_error(output: str) -> str:
+    """When an error is an import/attribute failure, introspect the REAL module (by importing it) so
+    the model fixes against reality instead of inventing an API — e.g. 'from antigravity import
+    Client' (antigravity has no Client; it is a joke module). Returns a GROUNDED FACT to add to the
+    prompt, or '' when the error isn't an import/attribute error."""
+    m = _IMPORT_ERR.search(output or "")
+    if not m:
+        return ""
+    mod = m.group("mod") or m.group("mod2") or m.group("mod3")
+    name = m.group("name") or m.group("attr")
+    if not mod:
+        return ""
+    probe = (
+        "import importlib\n"
+        f"try:\n    _m = importlib.import_module({mod!r})\n"
+        "    print('OK', sorted(n for n in dir(_m) if not n.startswith('_'))[:40])\n"
+        "except Exception as _e:\n    print('MISSING', type(_e).__name__, str(_e)[:120])\n"
+    )
+    out = (_run_in_kernel(probe, timeout=6.0).get("out") or "").strip()
+    if out.startswith("OK"):
+        names = out[2:].strip()
+        truth = f"The module `{mod}` IS importable here. Its REAL public names are: {names}."
+        if name:
+            truth += (f" It has NO `{name}` — that name does not exist in `{mod}`. Do NOT import or "
+                      f"call `{name}`, do NOT invent an API around it, and do NOT suggest installing "
+                      f"`{mod}` (it is already present). Use only the real names above, or remove the "
+                      "fabricated usage.")
+        return "\n\nGROUNDED FACT (from actually importing the module): " + truth
+    if out.startswith("MISSING"):
+        return (f"\n\nGROUNDED FACT: `{mod}` is NOT available in this environment ({out[7:].strip()}). "
+                "The user is OFFLINE — do NOT suggest pip/uv/conda install. Use the standard library "
+                "instead, or tell the user plainly that the module isn't installed.")
+    return ""
+
+
 def _new_tina4_app(text: str) -> str:
     """Provision a new Tina4 Python app in the notebook area, start it, and open the preview."""
     from pathlib import Path
@@ -1840,6 +1883,9 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             "the cause and FIX it. The code is already provided in this message — do NOT ask the user "
             "to share the code again; just return the corrected code:\n" + output[-1800:]
         )
+        # Ground an import/attribute error against the REAL module so the model stops inventing an API
+        # (e.g. 'from antigravity import Client') or suggesting an install for a module already present.
+        system_text += _ground_import_error(output)
     if open_files.strip() and not conceptual:
         # Files the user has OPEN in editor/notebook tabs — be aware of them when answering.
         system_text += (

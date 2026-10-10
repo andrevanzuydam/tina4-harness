@@ -182,6 +182,26 @@ def test_drop_bug_claims_removes_bug_sentences_keeps_description():
     assert "returns the sum" in out
 
 
+# --- grounding an import error against the REAL module (no hallucinated APIs) --------------------
+
+def test_ground_import_error_names_real_module_members_and_denies_fake_symbol():
+    # 'os' is importable but has no 'Client' — grounding must say so from reality, not guess.
+    g = lab._ground_import_error("ImportError: cannot import name 'Client' from 'os'")
+    assert "importable" in g.lower()
+    assert "NO `Client`" in g
+    assert "REAL public names are:" in g and "DirEntry" in g  # grounded from real dir(os)
+    assert "install" in g.lower()  # ... specifically telling the model NOT to suggest installing
+
+
+def test_ground_import_error_missing_module_says_offline_no_install():
+    g = lab._ground_import_error("ModuleNotFoundError: No module named 'tensorflow_xyz'")
+    assert "not available" in g.lower() and "offline" in g.lower()
+
+
+def test_ground_import_error_ignores_non_import_errors():
+    assert lab._ground_import_error("ZeroDivisionError: division by zero") == ""
+
+
 # --- vision image normalisation (the real quality lever) -----------------------------------------
 
 def _make_png(tmp_path, w, h):

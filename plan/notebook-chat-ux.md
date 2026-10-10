@@ -44,6 +44,13 @@ and edit code in the right place, run it, manage cells, and converse — without
       "show/write/run the code" transcribes the code FROM the image (vision) and places+runs it (new
       notebook if asked). Prompt tuned ("list every line of code visible, verbatim") + placeholder
       guard, since the 2B emits a template placeholder for "transcribe as runnable Python".
+- [x] Harness pasted/"fixed" HALLUCINATED code: the 2B invented a fake API
+      (`from antigravity import Client`, `client.get_geocode(...)`) when elaborating beyond a literal
+      transcription, and the fix loop "fixed" it with generic install boilerplate. Root cause: the
+      harness validated SYNTAX, not runtime/reality. Added `_ground_import_error`: on an
+      import/attribute error it imports the REAL module, lists its actual members, and tells the model
+      the symbol does not exist + do NOT suggest installing an already-present module (or, if truly
+      missing, that we're offline — no install). Grounds the fix against reality.
 - [x] "What is happening?" (image open) → text brain returned a BRACKETED PLACEHOLDER
       ("[Analyze the situation, consider multiple hypotheses…]"). Two fixes: (1) a situational
       question with an image open now routes to vision (describes the image), unlike a concept
