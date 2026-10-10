@@ -1651,18 +1651,26 @@ class ChatPanel extends Widget {
         },
         (delta: string) => {
           streamed += delta;
-          // While the model is inside <think>…</think>, keep the status reading "thinking" and show
-          // nothing raw; once the answer starts, stream it calmly into the body.
-          const thinking = streamed.includes('<think>') && !streamed.includes('</think>');
-          if (thinking) {
+          // Hide the model's REASONING while it streams — Qwen reasons in <think>…</think>, Gemma in
+          // <|channel>thought…<channel|>. Keep the status on "thinking…" until the reasoning closes,
+          // then stream the answer calmly (never show the raw reasoning or its markers).
+          const openThink = streamed.includes('<think>') && !streamed.includes('</think>');
+          const openChannel = streamed.includes('<|channel>') && !streamed.includes('<channel|>');
+          if (openThink || openChannel) {
             if (!/thinking/i.test(label.textContent || '')) {
               label.textContent = '💭 thinking…';
             }
             return;
           }
-          const answer = streamed.includes('</think>')
-            ? (streamed.split('</think>').pop() as string)
-            : streamed.replace('<think>', '');
+          // The answer is whatever follows the LAST reasoning-close marker; strip any stray tags.
+          let answer = streamed;
+          if (answer.includes('</think>')) {
+            answer = answer.split('</think>').pop() as string;
+          }
+          if (answer.includes('<channel|>')) {
+            answer = answer.split('<channel|>').pop() as string;
+          }
+          answer = answer.replace(/<\/?think>|<\|think\|>|<\|channel>|<channel\|>/g, '');
           const shown = answer.trim();
           if (shown) {
             body.textContent = shown.length > 2000 ? '…' + shown.slice(-2000) : shown;
