@@ -1749,16 +1749,30 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 "__main__ block verbatim, and do NOT try to import a file whose name isn't a valid "
                 "Python module (e.g. one with a hyphen)."
             )
-    if notebook_code and not conceptual:
+    # An EDIT request (remove / strip / delete / simplify / change … the selected code) must REWRITE
+    # the selected cell, not write a new addition — so it overrides the "don't redefine" guidance.
+    is_edit = bool(context.strip()) and bool(re.search(
+        r"\b(remov\w*|delet\w*|strip\w*|get rid|take (out|away)|clean\s*up|tidy|simplif\w*|drop\w*|"
+        r"without|fix\w*|edit\w*|updat\w*|chang\w*|refactor\w*|rewrit\w*|modif\w*|replace|rename)\b",
+        last_user, re.I))
+    if is_edit:
+        system_text += (
+            "\n\nThe user wants to EDIT the selected code below — apply exactly the change they asked "
+            "for (e.g. REMOVE the part they named, such as the example usage / `if __name__` block / "
+            "tests / comments) and return the COMPLETE edited code, ready to run. Do NOT add anything "
+            "they did not ask for, and do NOT keep the part they asked to remove. Reply with ONE "
+            "```python block containing the whole edited cell:\n```python\n" + context.strip() + "\n```"
+        )
+    elif context and not conceptual:
+        system_text += (
+            "\n\nThe user has SELECTED this code in the notebook; when they say 'this', 'it', or "
+            "'the selection', they mean it:\n```python\n" + context + "\n```"
+        )
+    if notebook_code and not conceptual and not is_edit:
         system_text += (
             "\n\nThe notebook ALREADY contains this code — reuse these names and do NOT rewrite or "
             "redefine them. Write ONLY the new code the user asks for (e.g. just the call, not the "
             "function again):\n```python\n" + notebook_code[-4000:] + "\n```"
-        )
-    if context and not conceptual:
-        system_text += (
-            "\n\nThe user has SELECTED this code in the notebook; when they say 'this', 'it', or "
-            "'the selection', they mean it:\n```python\n" + context + "\n```"
         )
     # Ground questions AND error-fixes in the stdlib docs (help beginners get correct Python).
     if _looks_like_question(last_user) or output:
@@ -1920,7 +1934,8 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 tidied = tidied2
     # A fix/edit request WANTS to redefine (the UI replaces the existing cell). A plain "add/use"
     # request should NOT redefine — strip any duplicate definition of names already in the notebook.
-    is_revision = bool(re.search(r"\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)\w*", last_user, re.I))
+    is_revision = is_edit or bool(re.search(
+        r"\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)\w*", last_user, re.I))
     if notebook_code and not is_revision:
         tidied = _strip_redefs_in_reply(tidied, _defined_names(notebook_code))
     return _MODE_CODE + _with_marker(mark, tidied)

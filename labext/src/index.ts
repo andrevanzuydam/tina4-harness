@@ -1258,7 +1258,8 @@ class ChatPanel extends Widget {
     // CREATE/build/add request writes a NEW cell. Debugging never spams cells.
     // Modifying EXISTING code (fix it, remove/strip part of it, simplify it) edits the cell in
     // place — it must not spawn a new cell.
-    const isFix = /\b(fix|debug|edit|updat|chang|refactor|rewrit|modif|correct|repair|solve|remov|delet|get rid|take out|strip|clean ?up|simplif|tidy|drop|without)\b/i.test(text);
+    // Prefix patterns (\b only at the START) so remov→remove/removing, delet→delete/deleting, etc.
+    const isFix = /\b(fix|debug|edit|updat|chang|refactor|rewrit|modif|correct|repair|solve|remov|delet|get rid|take out|strip|clean ?up|simplif|tidy|drop|without|take away|get rid of)/i.test(text);
     // An explicit "in a cell" / "new cell" means they want a CELL — honour it even over a question.
     const wantsCell = /\b(in|into|as|to)\s+a?\s*(new\s+)?cell\b/i.test(text) || /\bnew cell\b/i.test(text);
     const hasError = /error|traceback/i.test(output);
