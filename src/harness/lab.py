@@ -1885,10 +1885,11 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             except Exception:
                 pass
     # Ground a BUILD request in what ALREADY exists in the WORKING FOLDER — look at the project's real
-    # code (existing models, routes, helpers) and reuse it, instead of inventing. Retrieval-gated: only
-    # inject chunks that actually share a meaningful term with the request, so a self-contained ask
-    # ("add two numbers") doesn't get unrelated project code dumped on it.
-    if intent == "code":
+    # code (existing models, routes, helpers) and reuse it, instead of inventing. Only for a FRESH
+    # build (no cell selected): when a cell IS selected the user is editing THAT code, and other
+    # project files are noise that can derail the edit (e.g. 'remove the print' must not re-add one).
+    # Retrieval-gated: only inject chunks that share a meaningful term with the request.
+    if intent == "code" and not context.strip():
         try:
             from . import repo as _repo
 
