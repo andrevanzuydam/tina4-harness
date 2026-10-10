@@ -245,11 +245,12 @@ _CHAT_SYSTEM = (
     "- A question that starts with explain / what is / what are / how does / how do / why / tell me / "
     "describe ALWAYS opens with a sentence of plain explanation, NEVER a code block first (a short "
     "example may come AFTER the explanation).\n"
-    "- Explain with plain words, short bullet lists, Markdown TABLES, and arrows like `->` for flow. "
-    "NEVER draw ASCII-art or box-drawing DIAGRAMS — no hand-drawn boxes made of │ ─ ┌ ┐ └ ┘ or rows "
-    "of |, +, _, / and \\; they render as garbage. To show a flow or how parts connect (requests, "
-    "client-server, a protocol), use a NUMBERED LIST or `A -> B -> C`, never a drawing. Markdown "
-    "tables are fine. Give the current TIME as HH:MM when asked the time.\n"
+    "- Explain with plain words, short bullet lists, and arrows like `->` for flow. This is a CHAT "
+    "bubble, so: do NOT use Markdown headings (no #, ##, ### — they render as huge text); do NOT use "
+    "Markdown tables (they render cramped and unreadable here) — use a few short bullets instead; "
+    "and NEVER draw ASCII-art or box-drawing DIAGRAMS (no boxes made of │ ─ ┌ ┐ └ ┘ or rows of |, +, "
+    "_, / and \\ — they render as garbage). To show a flow or how parts connect, use a NUMBERED LIST "
+    "or `A -> B -> C`, never a drawing or a table. Give the current TIME as HH:MM when asked.\n"
     "- KEEP EXPLANATIONS SHORT — this is the most important rule for answers. At most ~4 short "
     "bullets OR 2-3 short sentences. Give ONLY the essentials; do NOT write multiple ## sections, "
     "long paragraphs, or exhaustive detail. End with one short line inviting the user to ask for "
@@ -270,11 +271,20 @@ _CHAT_SYSTEM = (
 )
 
 
+def _demote_headings(text: str) -> str:
+    """Turn Markdown headings (# .. ######) into bold OUTSIDE code fences — in a chat bubble a heading
+    renders as oversized text and looks broken. Leaves `# comments` inside ```code``` blocks alone."""
+    parts = re.split(r"(```.*?```)", text, flags=re.S)
+    for i in range(0, len(parts), 2):  # even indices are outside fenced code
+        parts[i] = re.sub(r"(?m)^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*$", r"**\1**", parts[i])
+    return "".join(parts)
+
+
 def _cap_prose(text: str, limit: int = 700) -> str:
     """Trim a long prose answer at a sentence/line boundary — WITHOUT breaking Markdown. Never cuts
     inside a fenced code block (that would leave an unclosed ``` and render the whole reply as raw
-    text), and closes any dangling fence."""
-    text = text.strip()
+    text), closes any dangling fence, and demotes chat-breaking headings to bold."""
+    text = _demote_headings(text.strip())
     if len(text) > limit:
         cut = text[:limit]
         # If the cut lands inside a code fence, back up to before that fence opened.
@@ -1926,7 +1936,16 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         r"the output|the loop|the variable|the snippet|the file)\b", last_user, re.I))
     weak_ref = bool(re.search(r"\b(this|that|it|here|above|below)\b", last_user, re.I))
     references_code = strong_code_ref or (weak_ref and not asks_tina4)
-    conceptual = intent == "ask" and not cell_help and not references_code
+    # A question asked while the cell shows an ERROR, or a "what's going on / not working / why isn't
+    # this working" question with a cell selected, is about THAT cell/error — NOT a concept. Withhold
+    # the code only for a genuinely general question (no error, no cell reference).
+    output_err = bool(output) and bool(re.search(r"error|traceback|exception", output, re.I))
+    situational = bool(re.search(
+        r"\bwhat(?:'?s| is| are)?\s+(going on|happening|wrong|the problem|the issue)\b"
+        r"|\b(not|n'?t)\s+work(ing|s)?\b|\bdoes\s*n'?t\s+work\b|\bwhy (is|isn'?t|does|does\s*n'?t|won'?t)\b"
+        r"|\bbroken\b|\bfailing\b|\bwrong with\b", last_user, re.I))
+    conceptual = (intent == "ask" and not cell_help and not references_code
+                  and not output_err and not (situational and context.strip()))
     # Persisting thread memory: a compact running summary of earlier turns so a follow-up stays on
     # topic after the original turn scrolls out of the verbatim window.
     digest = _conversation_digest(messages)
@@ -1934,16 +1953,22 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         system_text += ("\n\nConversation so far — use it to resolve short references ('it', 'that') "
                         "and to RECALL anything the user told you earlier (e.g. a fact or preference). "
                         "If they ask you to recall it, answer from here:\n" + digest)
-    if output and not conceptual:
+    # ALWAYS let the model SEE what the user is looking at — the cell, its error, the notebook, open
+    # files — and let IT determine whether the message is about them. We never WITHHOLD the cell on a
+    # keyword guess (that made "what is going on?" get a generic non-answer); for a general question we
+    # just FRAME the code as reference so it isn't dragged into the answer. `about_code` (= not
+    # conceptual) decides the framing, not whether the code is present.
+    about_code = not conceptual
+    if output:
         system_text += (
-            "\n\nThe active cell's latest OUTPUT / ERROR is below. If it is an error, use it to find "
-            "the cause and FIX it. The code is already provided in this message — do NOT ask the user "
-            "to share the code again; just return the corrected code:\n" + output[-1800:]
+            "\n\nThe active cell's latest OUTPUT / ERROR is below. If the user is asking about it, or "
+            "something isn't working, use it to find the cause and FIX it — the code is already in this "
+            "message, so NEVER ask the user to share it again:\n" + output[-1800:]
         )
         # Ground an import/attribute error against the REAL module so the model stops inventing an API
         # (e.g. 'from antigravity import Client') or suggesting an install for a module already present.
         system_text += _ground_import_error(output)
-    if open_files.strip() and not conceptual:
+    if open_files.strip():
         # Files the user has OPEN in editor/notebook tabs — be aware of them when answering.
         system_text += (
             "\n\nThe user currently has these FILES OPEN on screen. When they ask about 'the file', "
@@ -1975,16 +2000,25 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             "they did not ask for, and do NOT keep the part they asked to remove. Reply with ONE "
             "```python block containing the whole edited cell:\n```python\n" + context.strip() + "\n```"
         )
-    elif context and not conceptual:
-        system_text += (
-            "\n\nThe user has SELECTED this code in the notebook; when they say 'this', 'it', or "
-            "'the selection', they mean it:\n```python\n" + context + "\n```"
-        )
-    if notebook_code and not conceptual and not is_edit:
+    elif context.strip():
+        if about_code:
+            system_text += (
+                "\n\nThe user has SELECTED this code in the notebook; when they say 'this', 'it', "
+                "'the selection', or 'the error', they mean it — answer about it:\n```python\n"
+                + context + "\n```"
+            )
+        else:
+            system_text += (
+                "\n\nFOR REFERENCE: the user has this cell selected, but their message reads like a "
+                "GENERAL question. Answer the question directly; do NOT use or mention this code unless "
+                "it is clearly what they are asking about:\n```python\n" + context + "\n```"
+            )
+    if notebook_code and not is_edit:
         system_text += (
             "\n\nThe notebook ALREADY contains this code — reuse these names and do NOT rewrite or "
             "redefine them. Write ONLY the new code the user asks for (e.g. just the call, not the "
-            "function again):\n```python\n" + notebook_code[-4000:] + "\n```"
+            "function again). If the user's question is about it, use it to answer:\n```python\n"
+            + notebook_code[-4000:] + "\n```"
         )
     # Ground questions AND error-fixes in the stdlib docs (help beginners get correct Python).
     if _looks_like_question(last_user) or output:
@@ -2004,8 +2038,9 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     recent = _evolving_context(messages, last_user, max_chars=budget)
     # Ground the CURRENT turn in the code the user is pointing at, so a poisoned history (e.g. earlier
     # "please share the code" deflections) can't make the model claim no code was provided. The code
-    # goes INTO the latest user message, not just the system prompt.
-    if context.strip() and not conceptual:
+    # goes INTO the latest user message — but only when the message is about the code (about_code), so
+    # a general question keeps the code as system-prompt reference without it being forced into the ask.
+    if context.strip() and about_code:
         recent = [dict(m) for m in recent]  # copy so we never mutate the caller's messages
         for m in reversed(recent):
             if m.get("role") == "user" and "```" not in m.get("content", ""):
