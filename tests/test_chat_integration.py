@@ -142,3 +142,40 @@ def test_tina4_marker_prefixes_replies_in_a_tina4_project(tmp_path, monkeypatch)
     assert _tina4.is_project(proj)
     out = chat("what is shopapp for", context="")
     assert out.startswith("🤖"), out[:120]
+
+
+# --- multi-turn conversational context (the mechanism, end to end) -------------------------------
+
+def test_multiturn_context_persists_topic_recall_and_no_hijack():
+    """A realistic short conversation: the topic stays sticky across follow-ups that don't repeat
+    'tina4', a selected cell never hijacks a conceptual question, and a fact planted early is
+    recalled many turns later — even with a cell selected."""
+    greet = 'def greet(name): return f"Hello, {name}!"'
+    script = [
+        ("my favourite number is 42, please remember it", ""),
+        ("tell me about tina4", ""),
+        ("why not dependencies?", greet),          # follow-up, no 'tina4', cell selected
+        ("how does routing work?", ""),
+        ("what port does it use?", greet),         # sticky topic, cell selected
+        ("what is my favourite number?", greet),   # recall across the whole chat, cell selected
+    ]
+    msgs: list = []
+    outs: list = []
+    for text, ctx in script:
+        msgs.append({"role": "user", "content": text})
+        # Pass the FULL running history each turn — this is what makes it a conversation.
+        raw = lab._chat(msgs, context=ctx, intent="ask", think="brief")
+        out = re.sub(r"__H(STATUS|STREAM)__\S*", "", raw)
+        msgs.append({"role": "assistant", "content": out})
+        outs.append(out)
+
+    why_deps, port, favnum = outs[2], outs[4], outs[5]
+    # 1) conceptual follow-up with a cell selected is NOT hijacked by the cell
+    assert "greet" not in why_deps.lower()
+    # 2) sticky topic: a follow-up that never says 'tina4' still answers about tina4, not "which app?"
+    assert "greet" not in port.lower()
+    assert not re.search(r"which (software|service|framework|app|tool)|could you clarify", port, re.I)
+    # 3) the planted fact persists in the memory the model is given (deterministic — the 2B's exact
+    #    recall wording varies, but the fact must be in the running digest), and recall isn't hijacked.
+    assert "42" in lab._conversation_digest(msgs)
+    assert "greet" not in favnum.lower()

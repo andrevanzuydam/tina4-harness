@@ -236,3 +236,39 @@ def test_ask_tina4_grounds_offline_and_tags_source():
     out = tina4.ask_tina4("how do I define a route", cwd=ROOT, k=3)
     assert out.strip()
     assert "# file:" in out  # chunks are tagged with their source file
+
+
+# --- persisting conversation memory (digest + evolving context) ----------------------------------
+
+def _mk(*pairs):
+    msgs = []
+    for role, content in pairs:
+        msgs.append({"role": role, "content": content})
+    return msgs
+
+
+def test_conversation_digest_preserves_an_early_fact():
+    msgs = _mk(
+        ("user", "my favourite number is 42, remember it"),
+        ("assistant", "Got it — 42."),
+        ("user", "tell me about tina4"),
+        ("assistant", "Tina4 is a zero-dependency web framework."),
+        ("user", "how does routing work?"),
+        ("assistant", "File-based routes in src/routes/."),
+        ("user", "what about the orm?"),
+        ("assistant", "Built-in ORM with models."),
+    )
+    digest = lab._conversation_digest(msgs, keep_recent=2)
+    assert "42" in digest                         # the planted fact survives in the running summary
+    assert "You told me" in digest                # a statement is labelled as told, not asked
+
+
+def test_evolving_context_retrieves_the_relevant_old_turn():
+    # 30 turns of filler, with the fact planted at the very start; a recall query must pull it back.
+    msgs = _mk(("user", "my favourite number is 42"), ("assistant", "noted"))
+    for i in range(30):
+        msgs.append({"role": "user", "content": f"unrelated question number {i} about lists"})
+        msgs.append({"role": "assistant", "content": f"here is answer {i}"})
+    sel = lab._evolving_context(msgs, "what is my favourite number?", keep_recent=5)
+    joined = " ".join(m["content"] for m in sel)
+    assert "42" in joined                         # BM25 recalled the early fact turn

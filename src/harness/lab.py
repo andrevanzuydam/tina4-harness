@@ -254,6 +254,16 @@ def _cap_prose(text: str, limit: int = 700) -> str:
     return text
 
 
+def _with_marker(mark: str, text: str) -> str:
+    """Prepend the 🤖 marker WITHOUT breaking Markdown. A heading/list/quote/fence/table must stay at
+    the start of its line, so put the marker on its own line in that case; otherwise inline it."""
+    if not mark:
+        return text
+    if re.match(r"\s*(#{1,6}\s|[-*+]\s|>\s|\||```|~~~|\d+[.)]\s)", text):
+        return mark.rstrip() + "\n\n" + text
+    return mark + text
+
+
 _PLACEHOLDER = re.compile(
     r"\[\s*(complete|full|your|the|insert|add)\b[^\]]*\]"
     r"|\[[^\]]*\b(solution|code|implementation|logic|here)\b[^\]]*\]"
@@ -729,10 +739,15 @@ def _as_choices(reply: str) -> dict | None:
     if any(len(c) > 60 or not c for c in choices):
         return None
     lead = " ".join(other).strip()
-    cue = re.search(r"\b(what|which|are you|do you mean|let me know|clarify|clarif|looking for|"
-                    r"curious about|would you like|did you mean|referring to)\b", lead, re.I)
-    # A clarification: the options are mostly questions, or the lead-in explicitly asks to choose.
-    if not (q_count >= max(1, len(choices) // 2) or (cue and "?" in reply)):
+    # Only an explicit "pick one" lead-in counts as a clarification cue — NOT a bare "what/which"
+    # (an overview like "What is a Queue?" with bullets must stay prose, not become pills).
+    cue = re.search(
+        r"\b(which (?:one|of these|of the following|would)|did you mean|do you mean|are you asking|"
+        r"would you like (?:me )?to|do you want (?:me )?to|pick one|choose (?:one|from|between)|"
+        r"let me know which|are you looking for|which of)\b", lead, re.I)
+    # A clarification: MOST options are themselves questions, OR the lead explicitly asks to choose.
+    questiony = len(choices) >= 2 and q_count >= max(2, (len(choices) + 1) // 2)
+    if not (questiony or (cue and "?" in lead)):
         return None
     clean = [re.sub(r"^(an?|the)\s+", "", c, flags=re.I).strip() for c in choices]
     clean = [c for c in clean if c]
@@ -1013,6 +1028,60 @@ def _evolving_context(messages: list, query: str, keep_recent: int = 5, k: int =
     except Exception:
         relevant = []
     return _cap(relevant + recent)
+
+
+def _one_line(s: str, n: int = 120) -> str:
+    s = re.sub(r"\s+", " ", s or "").strip()
+    return (s[: n - 1] + "…") if len(s) > n else s
+
+
+def _answer_gist(content: str, n: int = 150) -> str:
+    """A one-line gist of an assistant reply — code fences, sentinels, the 🤖 marker and heading
+    markers stripped, first real sentence kept. Used in the running conversation summary."""
+    c = re.sub(r"```.*?```", "", content or "", flags=re.S)
+    c = re.sub(r"@@HARNESS_\w+@@\S*", "", c)
+    c = re.sub(r"(?m)^\s*#{1,6}\s*", "", c).replace("🤖", "").strip()
+    first = re.split(r"(?<=[.!?])\s", c, 1)[0] if c else ""
+    return _one_line(first or c, n)
+
+
+def _conversation_digest(messages: list, keep_recent: int = 5, max_chars: int = 1600) -> str:
+    """A compact, model-free running summary of the turns BEFORE the last ``keep_recent`` — each
+    exchange as the user's line + a one-line gist of my answer. This is the persisting thread memory:
+    a follow-up like 'why not dependencies?' can see the conversation was about tina4, even once the
+    original turn has scrolled out of the verbatim window."""
+    older = messages[:-keep_recent] if len(messages) > keep_recent else []
+
+    def _verb(text: str) -> str:
+        # A question vs a statement/fact the user told us ("my favourite number is 42").
+        return "You asked" if text.rstrip().endswith("?") or re.match(
+            r"\s*(what|why|how|which|who|when|where|can|does|is|are|do)\b", text, re.I) else "You told me"
+
+    lines, pending = [], None
+    for m in older:
+        role, content = m.get("role"), (m.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            if pending:
+                lines.append(f"- {_verb(pending)}: {pending}")
+            pending = _one_line(content, 140)
+        elif role == "assistant":
+            gist = _answer_gist(content)
+            lines.append(f"- {_verb(pending)}: {pending} → I answered: {gist}" if pending
+                         else f"- I said: {gist}")
+            pending = None
+    if pending:
+        lines.append(f"- {_verb(pending)}: {pending}")
+    # Keep the most recent exchanges within the cap (drop oldest first).
+    kept, used = [], 0
+    for ln in reversed(lines):
+        if kept and used + len(ln) > max_chars:
+            break
+        kept.append(ln)
+        used += len(ln)
+    kept.reverse()
+    return "\n".join(kept)
 
 
 def _strip_docstrings(tree):
@@ -1424,9 +1493,21 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     # "tell me about tina4" is answered from the bundled docs, not the 2B's guesswork). LEAN ON the
     # docs only when the request needs guidance — not on every coding task — so documentation prose
     # never gets mistaken for code to write. The 🤖 marker signals "Tina4 mode" in the chat.
-    asks_tina4 = bool(re.search(r"\btina4\b", last_user, re.I))
-    mark = "🤖 " if (tina4_project is not None or asks_tina4) else ""
-    if tina4_project is not None or asks_tina4:
+    # Sticky topic: tina4-mode holds across the conversation, so a follow-up that doesn't repeat the
+    # word "tina4" ("why not dependencies?", "what port does it use?") still grounds in the tina4
+    # docs. Include BOTH roles in the recent window — my own answers keep naming Tina4, so the topic
+    # persists until the user clearly moves on (several non-tina4 turns).
+    recent_text = " ".join((m.get("content") or "") for m in messages[-12:])
+    asks_tina4 = bool(re.search(r"\btina4\b", recent_text, re.I))
+    explicit_tina4 = bool(re.search(r"\btina4\b", last_user, re.I)) or tina4_project is not None
+    # A clearly PERSONAL / recall question is never a tina4 question, even mid-tina4-chat — don't
+    # ground it in docs or it will "answer only from the docs" and forget the conversation fact.
+    personal = bool(re.search(
+        r"\b(my|favou?rite|remember|recall|i said|i told|what'?s my|who am i|about me)\b",
+        last_user, re.I))
+    tina4_mode = explicit_tina4 or (asks_tina4 and not personal)
+    mark = "🤖 " if tina4_mode else ""
+    if tina4_mode:
         try:
             from pathlib import Path as _Path
 
@@ -1445,18 +1526,24 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 last_user, re.I))
             if needs_docs:
                 # A broad "tell me about tina4" is a weak retrieval query (tina4 is in every chunk) —
-                # expand it so BM25 surfaces the getting-started intro, not a random code snippet.
+                # expand it so BM25 surfaces the getting-started intro. A short follow-up ("why not
+                # dependencies?") gets the tina4 topic injected so it retrieves the right chapter.
                 docs_q = last_user
+                if asks_tina4 and not re.search(r"\btina4\b", last_user, re.I):
+                    docs_q = last_user + " tina4"
                 if asks_tina4 and re.search(r"\b(tell me about|what is|overview|about)\b", last_user, re.I):
-                    docs_q = last_user + " getting started what is zero-dependency overview key features"
+                    # Bias the overview toward the Python getting-started intro (this is a Python
+                    # notebook) rather than the tina4-js docs.
+                    docs_q += " python getting started what is zero-dependency web framework overview"
                 docs = tina4.ask_tina4(docs_q, cwd=tina4_project or _Path.cwd())
                 if docs:
                     system_text += (
                         "\n\nReference Tina4 documentation — the source of truth. Answer ONLY from it; "
                         "do NOT use outside knowledge and do NOT invent details. Tina4 is a "
-                        "ZERO-DEPENDENCY framework (Python / PHP / Ruby / Node.js, plus a tiny reactive "
-                        "frontend, tina4-js) — it is NOT built on Express, Fastify, Redux, Vue or any "
-                        "third-party library; routing, ORM, templates (Frond), auth, queues and "
+                        "ZERO-DEPENDENCY WEB framework whose backends are Python, PHP, Ruby and "
+                        "Node.js (tina4-js is only the optional tiny frontend) — do NOT call it 'a "
+                        "JavaScript framework', and it is NOT built on Express, Fastify, Redux, Vue or "
+                        "any third-party library; routing, ORM, templates (Frond), auth, queues and "
                         "WebSocket are all built in. Do NOT paste the docs verbatim or treat them as "
                         "code to edit; write fresh code that follows them:\n" + docs[:1500])
         except Exception:
@@ -1545,13 +1632,32 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                                     "use the real name and parameters:\n```python\n" + blocks + "\n```")
             except Exception:
                 pass
-    if output:
+    # A CONCEPTUAL question (an ask that isn't help/fix and doesn't point at code) is answered from
+    # the CONVERSATION + docs — not from stale notebook/cell/open-file code that would hijack it
+    # (e.g. "why not dependencies?" must not get answered with the selected greet cell).
+    # Explicit code nouns ALWAYS point at the cell ("explain the code"). Bare pronouns ("it", "this")
+    # only do so OUTSIDE tina4-mode — in a tina4 chat "why IT has no dependencies" means the
+    # framework, not the selected cell.
+    strong_code_ref = bool(re.search(
+        r"\b(the code|the cell|the function|the method|the class|the selection|my code|the error|"
+        r"the output|the loop|the variable|the snippet|the file)\b", last_user, re.I))
+    weak_ref = bool(re.search(r"\b(this|that|it|here|above|below)\b", last_user, re.I))
+    references_code = strong_code_ref or (weak_ref and not asks_tina4)
+    conceptual = intent == "ask" and not cell_help and not references_code
+    # Persisting thread memory: a compact running summary of earlier turns so a follow-up stays on
+    # topic after the original turn scrolls out of the verbatim window.
+    digest = _conversation_digest(messages)
+    if digest:
+        system_text += ("\n\nConversation so far — use it to resolve short references ('it', 'that') "
+                        "and to RECALL anything the user told you earlier (e.g. a fact or preference). "
+                        "If they ask you to recall it, answer from here:\n" + digest)
+    if output and not conceptual:
         system_text += (
             "\n\nThe active cell's latest OUTPUT / ERROR is below. If it is an error, use it to find "
             "the cause and FIX it. The code is already provided in this message — do NOT ask the user "
             "to share the code again; just return the corrected code:\n" + output[-1800:]
         )
-    if open_files.strip():
+    if open_files.strip() and not conceptual:
         # Files the user has OPEN in editor/notebook tabs — be aware of them when answering.
         system_text += (
             "\n\nThe user currently has these FILES OPEN on screen. When they ask about 'the file', "
@@ -1569,13 +1675,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 "__main__ block verbatim, and do NOT try to import a file whose name isn't a valid "
                 "Python module (e.g. one with a hyphen)."
             )
-    if notebook_code:
+    if notebook_code and not conceptual:
         system_text += (
             "\n\nThe notebook ALREADY contains this code — reuse these names and do NOT rewrite or "
             "redefine them. Write ONLY the new code the user asks for (e.g. just the call, not the "
             "function again):\n```python\n" + notebook_code[-4000:] + "\n```"
         )
-    if context:
+    if context and not conceptual:
         system_text += (
             "\n\nThe user has SELECTED this code in the notebook; when they say 'this', 'it', or "
             "'the selection', they mean it:\n```python\n" + context + "\n```"
@@ -1599,7 +1705,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     # Ground the CURRENT turn in the code the user is pointing at, so a poisoned history (e.g. earlier
     # "please share the code" deflections) can't make the model claim no code was provided. The code
     # goes INTO the latest user message, not just the system prompt.
-    if context.strip():
+    if context.strip() and not conceptual:
         recent = [dict(m) for m in recent]  # copy so we never mutate the caller's messages
         for m in reversed(recent):
             if m.get("role") == "user" and "```" not in m.get("content", ""):
@@ -1705,7 +1811,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         if choices:
             import json as _json
             return _CHOICES_SENTINEL + _json.dumps(choices)
-        return mark + _cap_prose(reply, 8000)  # an explanation to read in the chat — nothing inserted
+        return _with_marker(mark, _cap_prose(reply, 8000))  # explanation — nothing inserted
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).
     m = _FENCE.search(tidied)
@@ -1731,7 +1837,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     is_revision = bool(re.search(r"\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)\w*", last_user, re.I))
     if notebook_code and not is_revision:
         tidied = _strip_redefs_in_reply(tidied, _defined_names(notebook_code))
-    return mark + tidied
+    return _with_marker(mark, tidied)
 
 
 def _looks_like_question(text: str) -> bool:
