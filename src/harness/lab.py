@@ -1751,10 +1751,10 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             )
     # An EDIT request (remove / strip / delete / simplify / change … the selected code) must REWRITE
     # the selected cell, not write a new addition — so it overrides the "don't redefine" guidance.
-    is_edit = bool(context.strip()) and bool(re.search(
+    is_edit = intent == "code" and bool(context.strip()) and bool(re.search(
         r"\b(remov\w*|delet\w*|strip\w*|get rid|take (out|away)|clean\s*up|tidy|simplif\w*|drop\w*|"
-        r"without|fix\w*|edit\w*|updat\w*|chang\w*|refactor\w*|rewrit\w*|modif\w*|replace|rename)\b",
-        last_user, re.I))
+        r"without|fix\w*|edit\w*|updat\w*|chang\w*|refactor\w*|rewrit\w*|modif\w*|replace|rename|"
+        r"add\w*|insert\w*|include|wrap|annotat\w*)\b", last_user, re.I))
     if is_edit:
         system_text += (
             "\n\nThe user wants to EDIT the selected code below — apply exactly the change they asked "

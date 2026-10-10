@@ -1231,6 +1231,50 @@ class ChatPanel extends Widget {
       return;
     }
 
+    // "remove/delete cell N" (the CELL itself is the object, not something inside it) → delete that
+    // whole cell. ("remove X from cell N" is an edit and falls through to the normal flow.)
+    const delMatch = text.match(/^\s*(?:please\s+)?(?:remov\w*|delet\w*|drop|get rid of)\s+(?:the\s+)?cell\s*#?\s*(\d+)\s*[.!]?\s*$/i);
+    if (delMatch) {
+      const n = parseInt(delMatch[1], 10);
+      const cells = panel.content.widgets;
+      const byExec = cells.filter(c => ((c.model as { executionCount?: number }).executionCount) === n);
+      const idx = byExec.length === 1 ? cells.indexOf(byExec[0]) : (n >= 1 && n <= cells.length ? n - 1 : -1);
+      this._messages.push({ role: 'user', content: text });
+      await this._append('user', text);
+      if (idx < 0) {
+        await this._append('assistant', `There's no cell ${n} — the notebook has ${cells.length} cell${cells.length === 1 ? '' : 's'}.`);
+        this._save();
+        return;
+      }
+      const model = panel.content.model;
+      model?.sharedModel.deleteCell(idx);
+      const bubble = document.createElement('div');
+      bubble.className = 'harness-msg harness-assistant';
+      const note = document.createElement('div');
+      note.className = 'harness-codenote';
+      note.textContent = `🗑 Deleted cell ${n}.`;
+      bubble.appendChild(note);
+      const pills = document.createElement('div');
+      pills.className = 'harness-pills';
+      const undo = document.createElement('button');
+      undo.className = 'harness-pill';
+      undo.textContent = 'Undo';
+      undo.onclick = () => {
+        try {
+          model?.sharedModel.undo();
+        } catch {
+          /* ignore */
+        }
+        undo.disabled = true;
+      };
+      pills.appendChild(undo);
+      bubble.appendChild(pills);
+      this._log.appendChild(bubble);
+      this._log.scrollTop = this._log.scrollHeight;
+      this._save();
+      return;
+    }
+
     // What the user is looking at — snapshotted when they reached for the chat (before the cell
     // blurred), so "what's wrong with my code?" sees the focused cell even on a borrowed kernel.
     let context = '';
@@ -1278,6 +1322,11 @@ class ChatPanel extends Widget {
     // place — it must not spawn a new cell.
     // Prefix patterns (\b only at the START) so remov→remove/removing, delet→delete/deleting, etc.
     const isFix = /\b(fix|debug|edit|updat|chang|refactor|rewrit|modif|correct|repair|solve|remov|delet|get rid|take out|strip|clean ?up|simplif|tidy|drop|without|take away|get rid of)/i.test(text);
+    // "add comments to my code", "add type hints to the function", "add error handling to this" —
+    // these MODIFY existing code (the result replaces the cell), even though "add" normally creates.
+    const modifiesExisting =
+      /\b(add|insert|include|put|give|wrap|annotat\w*)\b[^.?!]*\b(comment|docstring|doc ?string|type ?hint|type annotation|annotation|error handling|exception handling|logging|validation|return type)s?\b/i.test(text)
+      || /\b(add|insert|include|put|wrap|turn|convert|rename)\b[^.?!]*\b(to|into|in|around|on|for)\b[^.?!]*\b(my|the|this|that)\s+(code|cell|function|method|class|script|loop|snippet)\b/i.test(text);
     // An explicit "in a cell" / "new cell" means they want a CELL — honour it even over a question.
     const wantsCell = /\b(in|into|as|to)\s+a?\s*(new\s+)?cell\b/i.test(text) || /\bnew cell\b/i.test(text);
     const hasError = /error|traceback/i.test(output);
@@ -1299,9 +1348,10 @@ class ChatPanel extends Widget {
     let mode: 'ask' | 'fix' | 'create' =
       bareHelp ? 'ask'
       : isFix ? 'fix'
+      : isQuestion ? 'ask'
+      : (modifiesExisting && !!active) ? 'fix'   // modifying existing code → edit the cell in place
       : wantsCell ? 'create'
       : hasError && !isQuestion ? 'fix'
-      : isQuestion ? 'ask'
       : 'create';
 
     // Attach the active cell's code ONLY when the request is about existing code (fix/ask/error) —
