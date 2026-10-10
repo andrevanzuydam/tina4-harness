@@ -1765,11 +1765,15 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             else:
                 _status("🟢 Tina4 — grounding in the docs…")
             system_text += "\n\n" + tina4.PARADIGMS
-            # Pull doc chunks for a tina4 question, a how-to/concept question, or any ask.
-            needs_docs = intent == "ask" or asks_tina4 or bool(re.search(
+            # Ground EVERY tina4-mode turn in the docs — questions AND code generation. The model does
+            # not know tina4 from its weights, so writing tina4 code (a route, model, migration,
+            # template, auth, queue, …) without the docs is exactly where it invents an API. We ship
+            # the docs offline and retrieve over them, so there is no reason to generate blind.
+            needs_docs = intent in ("ask", "code") or asks_tina4 or bool(re.search(
                 r"\b(how|what|why|which|when|where|explain|guide|docs?|documentation|example|usage|"
                 r"supported|set ?up|configure|integrat|authenticat|websocket|session|queue|orm|"
-                r"migrat|template|signal|component|deploy|graphql|sse|realtime)\b",
+                r"migrat|template|signal|component|deploy|graphql|sse|realtime|route|page|endpoint|"
+                r"model|controller|middleware|crud|api|frond|cache|record|form)\b",
                 last_user, re.I))
             if needs_docs:
                 # A broad "tell me about tina4" is a weak retrieval query (tina4 is in every chunk) —
@@ -1880,6 +1884,36 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                                     "use the real name and parameters:\n```python\n" + blocks + "\n```")
             except Exception:
                 pass
+    # Ground a BUILD request in what ALREADY exists in the WORKING FOLDER — look at the project's real
+    # code (existing models, routes, helpers) and reuse it, instead of inventing. Retrieval-gated: only
+    # inject chunks that actually share a meaningful term with the request, so a self-contained ask
+    # ("add two numbers") doesn't get unrelated project code dumped on it.
+    if intent == "code":
+        try:
+            from . import repo as _repo
+
+            if _repo.ensure_indexed():
+                q_terms = {w for w in re.findall(r"[A-Za-z_]\w{3,}", last_user.lower())
+                           if w not in _COMMON_WORDS and w not in _CALL_STOPWORDS}
+                seen = (notebook_code or "") + (open_files or "")
+                picked = []
+                for text, _score in _repo.search_repo(last_user, k=4):
+                    body = (text or "").strip()
+                    if not body or body[:160] in seen:
+                        continue
+                    if q_terms and not (q_terms & set(re.findall(r"[A-Za-z_]\w{3,}", body.lower()))):
+                        continue  # no shared term → not actually relevant
+                    picked.append(body[:800])
+                    if len(picked) >= 3:
+                        break
+                if picked:
+                    system_text += (
+                        "\n\nRELEVANT CODE ALREADY IN THE WORKING FOLDER — reuse these names, models and "
+                        "patterns and follow the project's conventions; do NOT redefine or reinvent what "
+                        "already exists, and do NOT invent names that aren't here:\n```python\n"
+                        + "\n\n# ---\n".join(picked) + "\n```")
+        except Exception:
+            pass
     # A CONCEPTUAL question (an ask that isn't help/fix and doesn't point at code) is answered from
     # the CONVERSATION + docs — not from stale notebook/cell/open-file code that would hijack it
     # (e.g. "why not dependencies?" must not get answered with the selected greet cell).

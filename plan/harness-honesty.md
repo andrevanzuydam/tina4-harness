@@ -16,6 +16,13 @@ than pasting broken code or inventing an API. (User's stated principles.)
       code. Edits/fixes lean on prior cells and are validated separately (not pre-run in isolation).
 - [x] Ask when unsure: a clarifying rule at the top of the system prompt — ambiguous/underspecified
       requests get ONE short question; clear requests are acted on directly (no needless questions).
+- [x] PROACTIVE grounding (ground before generating, not only after). The model doesn't know the long
+      tail from its weights, so hand it the facts first:
+      - tina4: ground EVERY tina4-mode turn in the bundled docs — questions AND code generation
+        (previously code slipped through ungrounded, which is where it invented tina4 APIs).
+      - working folder: a BUILD request pulls RELEVANT existing project code (models/routes/helpers)
+        from the workspace index and tells the model to reuse it — relevance-gated (shared term) so a
+        self-contained ask doesn't get unrelated code dumped on it.
 
 ## Tests (real — no mocks)
 - [x] `_ground_import_error` over os / a missing module / a non-import error (deterministic).
