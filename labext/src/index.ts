@@ -1024,12 +1024,9 @@ class ChatPanel extends Widget {
     }
     const prev = cell.model.sharedModel.getSource();
     const proposed = sel ? prev.slice(0, sel.from) + code + prev.slice(sel.to) : code;
-    // Show the whole proposed cell in an editable area — you review/correct, then Apply.
-    const fixed = await editCodeDialog(this.rendermime, 'Review the fix — edit & apply', proposed);
-    if (fixed === null) {
-      await this._append('assistant', '(fix cancelled — nothing changed)');
-      return;
-    }
+    // Just do it — apply the edit straight to the cell and run it. No confirmation dialog; the Undo
+    // pill below (and the notebook's own undo) is the safety net.
+    const fixed = proposed;
     cell.model.sharedModel.setSource(fixed);
     await runCell(panel, cell);
 
@@ -1630,6 +1627,32 @@ class ChatPanel extends Widget {
     this._log.appendChild(pending);
     this._log.scrollTop = this._log.scrollHeight;
     let streamed = '';
+    // Render the live stream AS MARKDOWN (throttled) instead of raw text, so it reads like the final
+    // message — not raw `**bold**` / `### heading` / fenced source. Throughput is ample; we just cap
+    // the re-render rate so it stays calm.
+    let lastRender = 0;
+    let rendering = false;
+    const renderStream = async (md: string): Promise<void> => {
+      if (rendering || Date.now() - lastRender < 120) {
+        return;
+      }
+      rendering = true;
+      lastRender = Date.now();
+      try {
+        // Demote chat-breaking headings and close any dangling fence so partial markdown renders cleanly.
+        let safe = md.replace(/^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*$/gm, '**$2**');
+        if ((safe.match(/```/g) || []).length % 2 === 1) {
+          safe += '\n```';
+        }
+        const r = this.rendermime.createRenderer('text/markdown');
+        await r.renderModel(this.rendermime.createModel({ data: { 'text/markdown': safe }, trusted: true }));
+        body.replaceChildren(r.node);
+      } catch {
+        body.textContent = md;
+      } finally {
+        rendering = false;
+      }
+    };
     try {
       let reply = await kernelEdit(
         brainKernel,
@@ -1673,7 +1696,7 @@ class ChatPanel extends Widget {
           answer = answer.replace(/<\/?think>|<\|think\|>|<\|channel>|<channel\|>/g, '');
           const shown = answer.trim();
           if (shown) {
-            body.textContent = shown.length > 2000 ? '…' + shown.slice(-2000) : shown;
+            void renderStream(shown.length > 2000 ? '…' + shown.slice(-2000) : shown);
             this._log.scrollTop = this._log.scrollHeight;
           }
         }
