@@ -52,11 +52,11 @@ def _clean_indexes():
     """Each test starts with fresh retrieval indexes so they don't leak into one another."""
     _repo._index = None
     _repo._indexed_path = None
-    _tina4._docs_index = None
+    _tina4._docs_index_cache.clear()
     yield
     _repo._index = None
     _repo._indexed_path = None
-    _tina4._docs_index = None
+    _tina4._docs_index_cache.clear()
 
 
 def _clean(out):

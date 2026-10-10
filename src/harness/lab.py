@@ -223,13 +223,16 @@ _CHAT_SYSTEM = (
     "RULES:\n"
     "- DECIDE THE FORM from the request. If the user wants code WRITTEN or CHANGED, reply with a "
     "```python code block FIRST (plus at most one short sentence). If they want an EXPLANATION, a "
-    "fact, or to discuss or learn, EXPLAIN in words — do NOT open with a code block (a tiny inline "
-    "example later is fine). The notebook decides whether to insert a cell from this choice, so pick "
-    "the right one.\n"
+    "fact, or to discuss or learn, EXPLAIN in words — do NOT open with a code block. The notebook "
+    "decides whether to insert a cell from this choice, so pick the right one.\n"
+    "- A question that starts with explain / what is / what are / how does / how do / why / tell me / "
+    "describe ALWAYS opens with a sentence of plain explanation, NEVER a code block first (a short "
+    "example may come AFTER the explanation).\n"
     "- Explain with plain words, short bullet lists, Markdown TABLES, and arrows like `->` for flow. "
     "NEVER draw ASCII-art or box-drawing DIAGRAMS — no hand-drawn boxes made of │ ─ ┌ ┐ └ ┘ or rows "
-    "of |, +, _, / and \\; they render as garbage here (Markdown tables are fine). Give the current "
-    "TIME as HH:MM when asked the time.\n"
+    "of |, +, _, / and \\; they render as garbage. To show a flow or how parts connect (requests, "
+    "client-server, a protocol), use a NUMBERED LIST or `A -> B -> C`, never a drawing. Markdown "
+    "tables are fine. Give the current TIME as HH:MM when asked the time.\n"
     "- BE CONCISE — do not bombard the user with reading. Lead with the key point, keep it short, "
     "prefer a few bullets over long paragraphs, and invite the user to ask for more rather than "
     "dumping everything at once. A short answer they can act on beats a wall of text.\n"
@@ -1358,6 +1361,24 @@ def _run_sig(res: dict):
     return (bool(err), etype, res.get("out", "").strip(), res.get("value"))
 
 
+def _defs_only(code: str) -> str:
+    """Keep only imports and function/class definitions — drop top-level statements (calls, prints,
+    `if __name__ == '__main__':` blocks). Lets us compare FUNCTION behaviour without example code the
+    model adds."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except Exception:
+        return code
+    tree.body = [n for n in tree.body if isinstance(
+        n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom))]
+    try:
+        return ast.unparse(tree)
+    except Exception:
+        return code
+
+
 def _fix_verdict(orig: str, fixed: str) -> str:
     """Decide whether a proposed 'fix' is real by RUNNING both and comparing outputs:
       'cosmetic'          — identical observable behaviour (not a fix at all)
@@ -1367,17 +1388,21 @@ def _fix_verdict(orig: str, fixed: str) -> str:
     """
     if _behaviour_equiv(orig, fixed):
         return "cosmetic"  # identical once docstrings/comments are ignored — no need to run
-    probe = _probe_calls(orig)
-    suffix = ("\n" + probe) if probe else ""
-    a = _run_sig(_run_in_kernel(orig + suffix))
-    b = _run_sig(_run_in_kernel(fixed + suffix))
-    if a == b:
-        return "cosmetic"
-    if a[0] and not b[0]:
+    # 1) Run the cells AS WRITTEN to catch a top-level ERROR being fixed (or introduced).
+    a_full = _run_sig(_run_in_kernel(orig))
+    b_full = _run_sig(_run_in_kernel(fixed))
+    if a_full[0] and not b_full[0]:
         return "fixes_error"
-    if b[0] and not a[0]:
+    if b_full[0] and not a_full[0]:
         return "fix_breaks"
-    return "changes_behaviour"
+    # 2) Otherwise compare the FUNCTIONS' behaviour in isolation (defs + probe calls), so merely
+    #    ADDING example usage (prints, a __main__ block) is NOT mistaken for a behaviour change.
+    probe = _probe_calls(orig)
+    if probe:
+        a = _run_sig(_run_in_kernel(_defs_only(orig) + "\n" + probe))
+        b = _run_sig(_run_in_kernel(_defs_only(fixed) + "\n" + probe))
+        return "cosmetic" if a == b else "changes_behaviour"
+    return "cosmetic" if a_full == b_full else "changes_behaviour"
 
 
 def _chat(messages: list, context: str = "", notebook_code: str = "", output: str = "",
@@ -1468,11 +1493,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         explore = re.search(r"\b(what|how|where|explain|summar|describe|review|does|show)\b", last_user, re.I)
         refs_code = False
         if explore and not strong:
+            # Only treat it as a REPO question when the user names an actual FILE in the workspace —
+            # a fuzzy definition match hijacks general questions ("websocket" -> some floodfill.py).
             toks = [t for t in re.findall(r"[A-Za-z_]\w{2,}", last_user)
-                    if t.lower() not in _CALL_STOPWORDS][:6]
+                    if t.lower() not in _CALL_STOPWORDS and len(t) >= 4][:6]
             try:
-                refs_code = bool(_repo.find_definitions(toks)) or \
-                    any(_repo.find_file(t, exact=True) or _repo.find_file(t + ".py", exact=True) for t in toks)
+                refs_code = any(_repo.find_file(t, exact=True) or _repo.find_file(t + ".py", exact=True)
+                                for t in toks)
             except Exception:
                 refs_code = False
         pinned = bool(context.strip() and intent == "ask" and _extract_assertion(last_user))
@@ -1488,11 +1515,15 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             r"|\bin (?:the|this) (?:repo|project|codebase)\b",
             last_user, re.I,
         ))
-        route_repo = explicit_repo or (not has_sel and (strong or (explore and refs_code)))
+        # A question that names tina4 is a FRAMEWORK question → tina4 docs, never repo Q&A (unless an
+        # explicit repo/file signal is present).
+        tina4_q = bool(re.search(r"\btina4\b", last_user, re.I))
+        route_repo = explicit_repo or (not has_sel and not tina4_q and (strong or (explore and refs_code)))
         if route_repo and not pinned and _repo.ensure_indexed():
             _status("🔎 searching the repo…")
             # history → keeps follow-ups in context; open_files → aware of what's open on screen.
-            return _repo.ask_repo(last_user, max_tokens=600, history=messages, open_code=open_files)
+            return _MODE_ASK + _repo.ask_repo(last_user, max_tokens=600, history=messages,
+                                              open_code=open_files)
     except Exception:
         pass
 
@@ -1563,14 +1594,15 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 docs = tina4.ask_tina4(docs_q, cwd=tina4_project or _Path.cwd())
                 if docs:
                     system_text += (
-                        "\n\nReference Tina4 documentation — the source of truth. Answer ONLY from it; "
-                        "do NOT use outside knowledge and do NOT invent details. Tina4 is a "
-                        "ZERO-DEPENDENCY WEB framework whose backends are Python, PHP, Ruby and "
-                        "Node.js (tina4-js is only the optional tiny frontend) — do NOT call it 'a "
-                        "JavaScript framework', and it is NOT built on Express, Fastify, Redux, Vue or "
-                        "any third-party library; routing, ORM, templates (Frond), auth, queues and "
-                        "WebSocket are all built in. Do NOT paste the docs verbatim or treat them as "
-                        "code to edit; write fresh code that follows them:\n" + docs[:1500])
+                        "\n\nAUTHORITATIVE FACT (use this as your opening and never contradict it): "
+                        "Tina4 is a ZERO-DEPENDENCY web framework, used here from PYTHON (it also has "
+                        "PHP, Ruby and Node.js ports; tina4-js is the optional tiny frontend). Routing, "
+                        "ORM, templates (Frond), authentication, queues and WebSocket are ALL BUILT IN. "
+                        "It is NOT built on, a version of, or related to Laravel, Django, Flask, "
+                        "Express, Fastify, Node, React, Redux or Vue; it was NOT 'formerly' another "
+                        "framework. Answer ONLY from the documentation below — do not use outside "
+                        "knowledge or invent names, methods or history. Do not paste the docs verbatim; "
+                        "write fresh code that follows them.\n\nDocumentation:\n" + docs[:1500])
         except Exception:
             pass
     help_run: dict = {}

@@ -305,32 +305,56 @@ def _doc_dirs(cwd: str | Path) -> list[tuple[str, Path]]:
     return dirs
 
 
+_docs_index_cache: dict = {}
+
+
 def ask_tina4(question: str, cwd: str | Path | None = None, k: int = 4) -> str:
-    """Retrieve the most relevant Tina4 documentation chunks for a question (grounding text). Indexes
-    the bundled python + js docs (and any project-local docs), tagging each chunk with its source so
-    the model can tell tina4-python from tina4-js. Works offline."""
-    global _docs_index
+    """Retrieve the most relevant Tina4 documentation chunks for a question (grounding text). This is
+    a PYTHON notebook harness, so a tina4 question grounds on the tina4-PYTHON docs by default — the
+    tina4-js (frontend) docs are only mixed in when the question is clearly about the frontend
+    (signals, components, reactive, the browser). This stops a general 'tell me about tina4' from
+    drifting into 'a JavaScript / Node.js framework'. Works offline."""
+    import re as _re
+
     base = Path(cwd or Path.cwd())
-    if _docs_index is None:
+    wants_js = bool(_re.search(r"\b(tina4-?js|tina4js|frontend|front-end|signal|component|reactive|"
+                               r"browser|spa|dom|web ?component|client-side)\b", question or "", _re.I))
+    key = "py+js" if wants_js else "py"
+    gw = _docs_index_cache.get(key)
+    if gw is None:
         dirs = _doc_dirs(base)
         if not dirs:
             return ""
+        # Which labels to index for this key: python+project always; js only when asked for.
+        keep = {"python", "project"} | ({"js"} if wants_js else set())
         try:
             from groundwire import Groundwire
 
             gw = Groundwire(memory="bm25", k=k, max_words=120)
+            n = 0
             for label, d in dirs:
+                if label not in keep:
+                    continue
                 for f in sorted(d.rglob("*.md")):
                     try:
                         gw.ingest_code(f.read_text(encoding="utf-8", errors="ignore"),
                                        title=f"{label}/{f.name}")
+                        n += 1
                     except Exception:
                         continue
-            _docs_index = gw
+            if n == 0:  # nothing matched 'keep' (e.g. only js bundled) → fall back to all dirs
+                for label, d in dirs:
+                    for f in sorted(d.rglob("*.md")):
+                        try:
+                            gw.ingest_code(f.read_text(encoding="utf-8", errors="ignore"),
+                                           title=f"{label}/{f.name}")
+                        except Exception:
+                            continue
+            _docs_index_cache[key] = gw
         except Exception:
             return ""
     try:
-        hits = _docs_index.retrieve(question, k=k)
+        hits = gw.retrieve(question, k=k)
         # Each chunk already carries a "# file: <label>/<name>" header from ingest, so the model can
         # see whether it's python or js docs.
         return "\n\n".join(text[:600] for _cid, text, _s in hits)

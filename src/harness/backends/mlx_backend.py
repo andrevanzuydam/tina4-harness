@@ -130,10 +130,15 @@ class MLXModel(HarnessModel):
         limit = max_tokens or self.settings.max_tokens
         prompt = self._render(messages, enable_thinking)
 
+        # A repetition penalty stops the small model degenerating into a loop (e.g. "No ORM, No
+        # routing, …" forever). 1.3 over the last ~48 tokens is a sane default; tune via env.
+        rep = float(os.environ.get("HARNESS_REPETITION_PENALTY", "1.18"))
+        rep_ctx = int(os.environ.get("HARNESS_REPETITION_CONTEXT", "64"))
         chunks: list[str] = []
         last = None
         for resp in stream_generate(
-            self.model, self.processor, prompt, image=None, max_tokens=limit, temperature=temp
+            self.model, self.processor, prompt, image=None, max_tokens=limit, temperature=temp,
+            repetition_penalty=rep, repetition_context_size=rep_ctx,
         ):
             chunks.append(resp.text)
             if on_text:

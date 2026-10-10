@@ -1256,7 +1256,9 @@ class ChatPanel extends Widget {
     const output = active ? cellOutputText(active) : '';
     // Three modes: a QUESTION explains (no cell); a FIX edits in place (no new cell); only a
     // CREATE/build/add request writes a NEW cell. Debugging never spams cells.
-    const isFix = /\b(fix|debug|edit|updat|chang|refactor|rewrit|modif|correct|repair|solve)/i.test(text);
+    // Modifying EXISTING code (fix it, remove/strip part of it, simplify it) edits the cell in
+    // place — it must not spawn a new cell.
+    const isFix = /\b(fix|debug|edit|updat|chang|refactor|rewrit|modif|correct|repair|solve|remov|delet|get rid|take out|strip|clean ?up|simplif|tidy|drop|without)\b/i.test(text);
     // An explicit "in a cell" / "new cell" means they want a CELL — honour it even over a question.
     const wantsCell = /\b(in|into|as|to)\s+a?\s*(new\s+)?cell\b/i.test(text) || /\bnew cell\b/i.test(text);
     const hasError = /error|traceback/i.test(output);
@@ -1370,12 +1372,17 @@ class ChatPanel extends Widget {
           }
         }
       );
-      // The kernel classified intent (NLP) and tells us how to render — this overrides our guess.
+      // The kernel classified intent (NLP) and tells us how to render — this overrides our ask-vs-
+      // create guess, but NOT an explicit FIX (editing existing code stays an in-place edit).
       if (reply.startsWith('@@HARNESS_ASK@@\n')) {
-        mode = 'ask';
+        if (mode !== 'fix') {
+          mode = 'ask';
+        }
         reply = reply.slice('@@HARNESS_ASK@@\n'.length);
       } else if (reply.startsWith('@@HARNESS_CODE@@\n')) {
-        mode = 'create';
+        if (mode !== 'fix') {
+          mode = 'create';
+        }
         reply = reply.slice('@@HARNESS_CODE@@\n'.length);
       }
       this._messages.push({ role: 'assistant', content: reply });

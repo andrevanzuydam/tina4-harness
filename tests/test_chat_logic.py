@@ -243,7 +243,7 @@ def test_bundled_docs_present_for_python_and_js():
 
 
 def test_ask_tina4_grounds_offline_and_tags_source():
-    tina4._docs_index = None  # fresh index for a deterministic run
+    tina4._docs_index_cache.clear()  # fresh index for a deterministic run
     out = tina4.ask_tina4("how do I define a route", cwd=ROOT, k=3)
     assert out.strip()
     assert "# file:" in out  # chunks are tagged with their source file
