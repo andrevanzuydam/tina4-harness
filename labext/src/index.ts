@@ -1260,7 +1260,10 @@ class ChatPanel extends Widget {
     // An explicit "in a cell" / "new cell" means they want a CELL — honour it even over a question.
     const wantsCell = /\b(in|into|as|to)\s+a?\s*(new\s+)?cell\b/i.test(text) || /\bnew cell\b/i.test(text);
     const hasError = /error|traceback/i.test(output);
-    const isQuestion = /\b(what|why|how|explain|mean|describe|tell me|overview|who|when|where|difference|compare|summar)\b/i.test(text) || text.trim().endsWith('?');
+    const isQuestion =
+      /\b(what|why|how|explain|mean|describe|tell me|overview|who|when|where|difference|compare|summar)\b/i.test(text) ||
+      /\b(i (?:want|'?d like|would like) to know|know more about|learn about|more about|curious about|info(?:rmation)? (?:on|about))\b/i.test(text) ||
+      text.trim().endsWith('?');
     // A bare "help" (no specific build topic) means: look at the cell they're on and explain it /
     // flag problems — never spawn a new cell. "help me write/draw/build X" has its own topic, so it
     // falls through to normal routing.
@@ -1270,7 +1273,9 @@ class ChatPanel extends Widget {
     const bareHelp = isHelp && !helpHasTopic;
     // A QUESTION explains (no cell); a FIX edits in place; anything else is a request for CODE, so
     // write it into a cell (a bare 'christmas tree' should produce a cell, not a chat-only answer).
-    const mode: 'ask' | 'fix' | 'create' =
+    // A first guess for cell-context attachment; the KERNEL re-classifies intent (NLP) and tells us
+    // how to render via a @@HARNESS_ASK@@/@@HARNESS_CODE@@ prefix, which overrides this below.
+    let mode: 'ask' | 'fix' | 'create' =
       bareHelp ? 'ask'
       : isFix ? 'fix'
       : wantsCell ? 'create'
@@ -1326,7 +1331,7 @@ class ChatPanel extends Widget {
     this._log.scrollTop = this._log.scrollHeight;
     let streamed = '';
     try {
-      const reply = await kernelEdit(
+      let reply = await kernelEdit(
         panel,
         'chat',
         {
@@ -1365,6 +1370,14 @@ class ChatPanel extends Widget {
           }
         }
       );
+      // The kernel classified intent (NLP) and tells us how to render — this overrides our guess.
+      if (reply.startsWith('@@HARNESS_ASK@@\n')) {
+        mode = 'ask';
+        reply = reply.slice('@@HARNESS_ASK@@\n'.length);
+      } else if (reply.startsWith('@@HARNESS_CODE@@\n')) {
+        mode = 'create';
+        reply = reply.slice('@@HARNESS_CODE@@\n'.length);
+      }
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
       // A new Tina4 app was provisioned + served: open the App Preview tab at its URL.

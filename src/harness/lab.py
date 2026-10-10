@@ -100,10 +100,11 @@ def _stream(chunk: str) -> None:
         pass
 
 
-def _locked_generate(model, messages, max_tokens, on_text=None, enable_thinking=True):
+def _locked_generate(model, messages, max_tokens, on_text=None, enable_thinking=True, temperature=None):
     with _lock:  # one generation at a time on the single local model
         return model.generate(
-            messages, max_tokens=max_tokens, on_text=on_text, enable_thinking=enable_thinking
+            messages, max_tokens=max_tokens, on_text=on_text, enable_thinking=enable_thinking,
+            temperature=temperature,
         )
 
 
@@ -112,7 +113,8 @@ def _locked_generate(model, messages, max_tokens, on_text=None, enable_thinking=
 _stopped = False
 
 
-def _generate(messages, max_tokens=700, stream: bool = False, enable_thinking: bool = True) -> str:
+def _generate(messages, max_tokens=700, stream: bool = False, enable_thinking: bool = True,
+              temperature=None) -> str:
     """Generate, honouring a mid-run kernel interrupt (Stop button) by ending early.
 
     The Stop button interrupts the kernel; that raises KeyboardInterrupt in this (main) thread
@@ -123,7 +125,8 @@ def _generate(messages, max_tokens=700, stream: bool = False, enable_thinking: b
     _stopped = False
     model = get_model()
     on_text = _stream if stream else None
-    fut = _executor().submit(_locked_generate, model, messages, max_tokens, on_text, enable_thinking)
+    fut = _executor().submit(_locked_generate, model, messages, max_tokens, on_text,
+                             enable_thinking, temperature)
     try:
         return fut.result()
     except KeyboardInterrupt:
@@ -218,6 +221,15 @@ _CHAT_SYSTEM = (
     "Python module (`import antigravity`), not anything else. Code you write is inserted and run as a "
     "NEW NOTEBOOK CELL automatically.\n\n"
     "RULES:\n"
+    "- DECIDE THE FORM from the request. If the user wants code WRITTEN or CHANGED, reply with a "
+    "```python code block FIRST (plus at most one short sentence). If they want an EXPLANATION, a "
+    "fact, or to discuss or learn, EXPLAIN in words — do NOT open with a code block (a tiny inline "
+    "example later is fine). The notebook decides whether to insert a cell from this choice, so pick "
+    "the right one.\n"
+    "- Explain with plain words, short bullet lists, Markdown TABLES, and arrows like `->` for flow. "
+    "NEVER draw ASCII-art or box-drawing DIAGRAMS — no hand-drawn boxes made of │ ─ ┌ ┐ └ ┘ or rows "
+    "of |, +, _, / and \\; they render as garbage here (Markdown tables are fine). Give the current "
+    "TIME as HH:MM when asked the time.\n"
     "- BE CONCISE — do not bombard the user with reading. Lead with the key point, keep it short, "
     "prefer a few bullets over long paragraphs, and invite the user to ask for more rather than "
     "dumping everything at once. A short answer they can act on beats a wall of text.\n"
@@ -252,6 +264,15 @@ def _cap_prose(text: str, limit: int = 700) -> str:
     if text.count("```") % 2 == 1:
         text += "\n```"
     return text
+
+
+def _starts_with_code(text: str) -> bool:
+    """The reply OPENS with a code block (after at most a short lead-in sentence) — i.e. the model
+    chose to WRITE CODE rather than explain. This is the routing signal: the model reliably picks the
+    right FORM for a request, so its own output decides ask-vs-code (no brittle classifier needed)."""
+    s = (text or "").lstrip()
+    f = s.find("```")
+    return f != -1 and len(s[:f].strip()) <= 60
 
 
 def _with_marker(mark: str, text: str) -> str:
@@ -711,6 +732,10 @@ def _detect_tina4(open_files: str, last_user: str = "", preview_urls: list | Non
 _WROTE_SENTINEL = "@@HARNESS_WROTE@@"  # tells the extension: files written, show + refresh preview
 _APP_SENTINEL = "@@HARNESS_APP@@"      # tells the extension: open the App Preview tab at <url>
 _FIX_SENTINEL = "@@HARNESS_FIX@@\n"    # tells the extension: offer to APPLY the trailing block to the cell
+# The kernel classifies intent (NLP), so it tells the extension how to render — overriding the
+# extension's own guess: ASK = show the answer, do NOT insert a cell; CODE = insert/run as a cell.
+_MODE_ASK = "@@HARNESS_ASK@@\n"
+_MODE_CODE = "@@HARNESS_CODE@@\n"
 _CHOICES_SENTINEL = "@@HARNESS_CHOICES@@"  # extension: render the options as clickable pills
 
 
@@ -1717,6 +1742,11 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     _status("💭 thinking…")
     reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, chat_cap,
                                     stream=True, enable_thinking=enable_thinking))
+    # NLP routing by OUTPUT FORM: the model reliably writes CODE for a code request and PROSE for a
+    # question, so its own answer decides ask-vs-code — a misrouted intent from the UI self-corrects
+    # here. (Help/fix/assertion already fixed intent to 'ask' via cell_help; leave those.)
+    if not cell_help:
+        intent = "code" if _starts_with_code(reply) else "ask"
     if intent == "code":
         _status("🔎 checking syntax…")
     if intent == "ask":
@@ -1811,7 +1841,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         if choices:
             import json as _json
             return _CHOICES_SENTINEL + _json.dumps(choices)
-        return _with_marker(mark, _cap_prose(reply, 8000))  # explanation — nothing inserted
+        return _MODE_ASK + _with_marker(mark, _cap_prose(reply, 8000))  # explanation — nothing inserted
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).
     m = _FENCE.search(tidied)
@@ -1837,7 +1867,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     is_revision = bool(re.search(r"\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)\w*", last_user, re.I))
     if notebook_code and not is_revision:
         tidied = _strip_redefs_in_reply(tidied, _defined_names(notebook_code))
-    return _with_marker(mark, tidied)
+    return _MODE_CODE + _with_marker(mark, tidied)
 
 
 def _looks_like_question(text: str) -> bool:

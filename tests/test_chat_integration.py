@@ -59,11 +59,15 @@ def _clean_indexes():
     _tina4._docs_index = None
 
 
+def _clean(out):
+    out = re.sub(r"__H(STATUS|STREAM)__\S*", "", out)
+    return re.sub(r"^@@HARNESS_(ASK|CODE)@@\n", "", out)  # the kernel's render-mode signal
+
+
 def chat(msg, **kw):
     kw.setdefault("intent", "ask")
     kw.setdefault("think", "brief")
-    out = lab._chat([{"role": "user", "content": msg}], **kw)
-    return re.sub(r"__H(STATUS|STREAM)__\S*", "", out)
+    return _clean(lab._chat([{"role": "user", "content": msg}], **kw))
 
 
 def last_block(out):
@@ -164,8 +168,7 @@ def test_multiturn_context_persists_topic_recall_and_no_hijack():
     for text, ctx in script:
         msgs.append({"role": "user", "content": text})
         # Pass the FULL running history each turn — this is what makes it a conversation.
-        raw = lab._chat(msgs, context=ctx, intent="ask", think="brief")
-        out = re.sub(r"__H(STATUS|STREAM)__\S*", "", raw)
+        out = _clean(lab._chat(msgs, context=ctx, intent="ask", think="brief"))
         msgs.append({"role": "assistant", "content": out})
         outs.append(out)
 

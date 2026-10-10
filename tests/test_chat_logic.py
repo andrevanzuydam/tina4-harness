@@ -44,6 +44,17 @@ def test_run_in_kernel_skips_stdin():
     assert r["skipped"] == "reads stdin" and not r["ran"]
 
 
+def test_starts_with_code_routes_by_output_form():
+    # opens with a code block (optionally a short lead-in) → the model chose to write CODE
+    assert lab._starts_with_code("```python\ndef f():\n    return 1\n```") is True
+    assert lab._starts_with_code("Here's the function:\n```python\ndef f(): ...\n```") is True
+    # prose first (even with a code example later) → an explanation, not a code reply
+    assert lab._starts_with_code(
+        "# Tina4\nTina4 is a zero-dependency web framework for Python with routing, an ORM, "
+        "templates and auth all built in.\n\nExample:\n```python\n@get('/')\n```") is False
+    assert lab._starts_with_code("A list comprehension builds a list in one line.") is False
+
+
 def test_run_summary_shapes():
     assert "ZeroDivisionError" in lab._run_summary({"ran": True, "error": "ZeroDivisionError: x", "out": ""})
     assert "42" in lab._run_summary({"ran": True, "error": None, "out": "", "value": "42"})
