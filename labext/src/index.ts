@@ -1196,9 +1196,18 @@ class ChatPanel extends Widget {
 
     const panel = this._panel();
 
-    // If an image document is the active tab, chat ABOUT the image (vision model).
+    // If an image document is the active tab AND the message is actually ABOUT it, chat about the
+    // image (vision model). A bare greeting or a code request with an image tab open is NOT a vision
+    // query — it must fall through to normal handling, not get hijacked into "about <file>".
     const imagePath = this._currentImagePath();
-    if (imagePath) {
+    const imageName = imagePath ? imagePath.split('/').pop()!.toLowerCase() : '';
+    const aboutImage =
+      !!imagePath && (
+        text.toLowerCase().includes(imageName) ||
+        /\b(image|picture|photo|pic|comic|diagram|chart|screenshot|figure|drawing|graph|scene|caption|colou?rs?|visible|contains?|says?)\b/i.test(text) ||
+        /\b(read|see|look|describe|show me|identify|recogni[sz]e|what'?s?|whats|what|why|how|who|where|when|which|explain|mean|tell me)\b/i.test(text) ||
+        /\b(this|that|it|here|the (text|picture|image|photo|drawing|comic))\b/i.test(text));
+    if (imagePath && aboutImage) {
       this._messages.push({ role: 'user', content: text });
       await this._append('user', text + `\n\n🖼 about ${imagePath}`);
       if (!panel) {
@@ -1271,6 +1280,75 @@ class ChatPanel extends Widget {
       bubble.appendChild(pills);
       this._log.appendChild(bubble);
       this._log.scrollTop = this._log.scrollHeight;
+      this._save();
+      return;
+    }
+
+    // --- bulk notebook actions (Jupyter operations, not model work) ---
+    // "clear all the cells" / "delete all cells" / "empty the notebook" → remove every cell.
+    if (/^\s*(?:please\s+)?(?:clear|delete|remove|empty|wipe|reset)\s+(?:all\s+)?(?:the\s+)?cells?\s*[.!?]*\s*$/i.test(text)
+        || /^\s*(?:please\s+)?(?:clear|empty|wipe|reset|blank)\s+(?:the\s+)?notebook\s*[.!?]*\s*$/i.test(text)) {
+      this._messages.push({ role: 'user', content: text });
+      await this._append('user', text);
+      const model = panel.content.model;
+      const n = panel.content.widgets.length;
+      if (model) {
+        model.sharedModel.transact(() => {
+          for (let i = n - 1; i >= 0; i--) {
+            model.sharedModel.deleteCell(i);
+          }
+          model.sharedModel.insertCell(0, { cell_type: 'code', source: '' });
+        });
+      }
+      const b = document.createElement('div');
+      b.className = 'harness-msg harness-assistant';
+      const nt = document.createElement('div');
+      nt.className = 'harness-codenote';
+      nt.textContent = `🗑 Cleared all ${n} cell${n === 1 ? '' : 's'}.`;
+      b.appendChild(nt);
+      const ps = document.createElement('div');
+      ps.className = 'harness-pills';
+      const ub = document.createElement('button');
+      ub.className = 'harness-pill';
+      ub.textContent = 'Undo';
+      ub.onclick = () => {
+        try {
+          model?.sharedModel.undo();
+        } catch {
+          /* ignore */
+        }
+        ub.disabled = true;
+      };
+      ps.appendChild(ub);
+      b.appendChild(ps);
+      this._log.appendChild(b);
+      this._log.scrollTop = this._log.scrollHeight;
+      this._save();
+      return;
+    }
+    // "clear (all) outputs" → clear every cell's output.
+    if (/\bclear\s+(?:all\s+)?(?:the\s+)?(?:cell\s+)?outputs?\b/i.test(text)) {
+      this._messages.push({ role: 'user', content: text });
+      await this._append('user', text);
+      try {
+        await this.app.commands.execute('notebook:clear-all-cell-outputs');
+        await this._append('assistant', '✓ Cleared all cell outputs.');
+      } catch (e: any) {
+        await this._append('assistant', 'Could not clear outputs: ' + e.message);
+      }
+      this._save();
+      return;
+    }
+    // "run all (the) cells" / "run everything" → run the whole notebook.
+    if (/^\s*(?:please\s+)?(?:run|execute|rerun)\s+(?:all|everything)(?:\s+(?:of\s+)?(?:the\s+)?cells?)?\s*[.!?]*\s*$/i.test(text)) {
+      this._messages.push({ role: 'user', content: text });
+      await this._append('user', text);
+      try {
+        await this.app.commands.execute('notebook:run-all-cells');
+        await this._append('assistant', '✓ Ran all cells.');
+      } catch (e: any) {
+        await this._append('assistant', 'Could not run all cells: ' + e.message);
+      }
       this._save();
       return;
     }

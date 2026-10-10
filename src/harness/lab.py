@@ -1303,6 +1303,64 @@ def _probe_calls(code: str, max_calls: int = 4) -> str:
     return "\n".join(lines)
 
 
+def _characterization_test(fn_code: str) -> str:
+    """Build a test cell that is GUARANTEED to pass and run: call each top-level function with simple
+    distinct args, capture what it REALLY returns by executing it, and pin that as an assertion. A
+    characterization test grounded in real execution — never a guessed value that fails (e.g. the 2B
+    reaching for `assert add(-3.7, -4.2) == -7.9`, which floating point makes false). Returns "" when
+    nothing safe is callable, so the caller can fall back."""
+    import ast
+
+    try:
+        tree = ast.parse(fn_code)
+    except Exception:
+        return ""
+    if re.search(r"\b(open|os|shutil|subprocess|sys|socket|requests|urllib|httpx|pathlib|Path|"
+                 r"remove|unlink|rmtree|rename|write|send|connect|popen|system|exec|eval|input)\b", fn_code):
+        return ""
+    primes = [2, 3, 5, 7, 11, 13, 17, 19]
+    calls = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name.startswith("_"):
+            continue
+        a = node.args
+        if a.vararg or a.kwarg or a.kwonlyargs:
+            continue
+        pos = list(getattr(a, "posonlyargs", [])) + list(a.args)
+        required = pos[: len(pos) - len(a.defaults)] if a.defaults else pos
+        vals = []
+        for i, arg in enumerate(required):
+            ann = getattr(arg, "annotation", None)
+            t = ann.id if isinstance(ann, ast.Name) else None
+            if t == "str":
+                vals.append(repr("abcde"[: i + 1]))
+            elif t == "bool":
+                vals.append("True")
+            elif t in ("list", "List"):
+                vals.append("[1, 2, 3]")
+            elif t in ("dict", "Dict"):
+                vals.append("{'k': 1}")
+            else:  # int or unannotated — exact under ==, unlike a float
+                vals.append(str(primes[i % len(primes)]))
+        calls.append(f"{node.name}({', '.join(vals)})")
+        if len(calls) >= 3:
+            break
+    if not calls:
+        return ""
+    # Execute to capture the REAL return values, then pin them as assertions.
+    probe = "\n".join(f"print(repr({c}))" for c in calls)
+    r = _run_in_kernel(fn_code + "\n" + probe)
+    outs = (r.get("out") or "").splitlines()
+    if r.get("error") or len(outs) < len(calls):
+        return ""
+    lines = [f"assert {c} == {outs[i]}" for i, c in enumerate(calls)]
+    lines.append('print("tests passed!")')
+    test = "\n".join(lines)
+    if not _valid_python(test)[0] or _run_in_kernel(fn_code + "\n" + test).get("error"):
+        return ""
+    return test
+
+
 def _valid_expr(src: str) -> bool:
     import ast
 
@@ -1535,7 +1593,15 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         # A question that names tina4 is a FRAMEWORK question → tina4 docs, never repo Q&A (unless an
         # explicit repo/file signal is present).
         tina4_q = bool(re.search(r"\btina4\b", last_user, re.I))
-        route_repo = explicit_repo or (not has_sel and not tina4_q and (strong or (explore and refs_code)))
+        # A request to AUTHOR code ("write me a method", "create a function to test the code") is a
+        # generation task, not a repository question — an incidental "the code"/"this file" in it must
+        # not hijack it to repo Q&A. Only an EXPLICIT repo/file signal still routes a writing request.
+        writing_code = bool(re.search(
+            r"\b(write|create|make|build|implement|generat\w*|code)\b.{0,40}?\b"
+            r"(method|function|class|script|program|def|algorithm|snippet|test|cell|code)\b",
+            last_user, re.I))
+        route_repo = explicit_repo or (
+            not has_sel and not tina4_q and not writing_code and (strong or (explore and refs_code)))
         if route_repo and not pinned and _repo.ensure_indexed():
             _status("🔎 searching the repo…")
             # history → keeps follow-ups in context; open_files → aware of what's open on screen.
@@ -1562,6 +1628,20 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         "involves the current time/date; prefer computing it in code (e.g. datetime.now()) over "
         "hardcoding a literal."
     )
+    # A multi-cell request ("add 2 cells — one for code and one to test it") → emit ONE code block
+    # PER cell; the notebook turns each block into its own cell.
+    multi_cell = bool(re.search(r"\b(\d+|two|three|four|several|multiple|a couple of)\s+cells?\b", last_user, re.I)) or bool(
+        re.search(r"\bone\s+(?:cell\s+)?(?:for|to)\b.+\b(?:and|,|then|plus|another)\b.+"
+                  r"(?:one|another|a\s+second|the\s+other|to\s+test|for\s+test|test)\b", last_user, re.I))
+    if multi_cell:
+        system_text += (
+            "\n\nThe user wants MULTIPLE cells. Output ONE ```python code block PER cell (this "
+            "overrides the single-block rule). Do NOT combine them, and do NOT use an "
+            "`if __name__ == \"__main__\":` block — put the test in its OWN separate block that calls "
+            "the function with `assert`. Format EXACTLY like this, two separate blocks:\n"
+            "```python\ndef add(a, b):\n    return a + b\n```\n"
+            "```python\nassert add(2, 3) == 5\nprint(\"ok\")\n```"
+        )
     # Ground in Tina4 when we're in a Tina4 project OR the question is explicitly ABOUT tina4 (so
     # "tell me about tina4" is answered from the bundled docs, not the 2B's guesswork). LEAN ON the
     # docs only when the request needs guidance — not on every coding task — so documentation prose
@@ -1938,6 +2018,36 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         r"\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)\w*", last_user, re.I))
     if notebook_code and not is_revision:
         tidied = _strip_redefs_in_reply(tidied, _defined_names(notebook_code))
+    # "add 2 cells — one for code and one to test it": the 2B won't emit two blocks, so split the
+    # function into its own cell and generate a REAL test (assert) for it as a second cell.
+    if multi_cell and re.search(r"\btest", last_user, re.I):
+        m = _FENCE.search(tidied)
+        if m:
+            fn_code = _defs_only(m.group(1)).strip() or m.group(1).strip()
+            test_sys = (_CHAT_SYSTEM + "\n\nWrite ONLY a short test for the function below, using "
+                        "`assert` on a couple of cases and a final print(\"tests passed\"). ONE "
+                        "```python block, NO prose, NO `if __name__` block, do NOT redefine the "
+                        "function:\n```python\n" + fn_code + "\n```")
+            try:
+                tr = _tidy_chat(_strip_think(_generate(
+                    [{"role": "system", "content": test_sys},
+                     {"role": "user", "content": "write the test"}], 300, enable_thinking=False)),
+                    as_tool=False)
+                tm = _FENCE.search(tr)
+                test_code = (tm.group(1).strip() if tm else "")
+            except Exception:
+                test_code = ""
+            if test_code and _valid_python(test_code)[0]:
+                # Cell 1 already defines the function — drop any redefinition so cell 2 is only the
+                # test. Then PROVE the test passes by running function+test; if it fails (the 2B often
+                # guesses a wrong expected value, e.g. float equality), replace it with a
+                # characterization test grounded in real execution.
+                test_only = _drop_redefs(test_code, _defined_names(fn_code)).strip() or test_code
+                if _run_in_kernel(fn_code + "\n" + test_only).get("error"):
+                    built = _characterization_test(fn_code)
+                    if built:
+                        test_only = built
+                tidied = f"```python\n{fn_code}\n```\n\n```python\n{test_only}\n```"
     return _MODE_CODE + _with_marker(mark, tidied)
 
 

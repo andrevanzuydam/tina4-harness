@@ -141,3 +141,19 @@ def test_write_a_test():
     mode, out = chat("write a test for this function", context=GOOD)
     code = code_of(out)
     assert valid(code) and ("assert" in code.lower() or "def test" in code.lower())
+
+
+# --- multi-cell: one cell for the code, one for the test -------------------------------------
+
+def test_add_two_cells_code_and_test():
+    mode, out = chat("add 2 cells - one for code and one to test the code, "
+                     "write me a method to add 2 numbers together")
+    blocks = re.findall(r"```(?:python)?\s*\n(.*?)```", out, re.S)
+    assert mode == "code"
+    assert len(blocks) == 2                        # one cell for the function, one for the test
+    fn, test = blocks[0].strip(), blocks[1].strip()
+    assert valid(fn) and "def " in fn              # cell 1 defines the function
+    assert valid(test) and "assert" in test        # cell 2 is a real assert-based test
+    assert "def " not in test                       # the test cell does NOT redefine the function
+    r = lab._run_in_kernel(fn + "\n" + test)        # both cells run in sequence and the test passes
+    assert not r.get("error"), r
