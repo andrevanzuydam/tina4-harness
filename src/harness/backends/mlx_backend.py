@@ -26,19 +26,21 @@ from ..download import MODELS_DIR, _has_weights, disk_size_gb, ensure_model
 from ..model import GB, MLX_LOCAL_DIR, MLX_REPO, GenStats, HarnessModel, Settings
 
 
-def _prep_image(path: str) -> str:
+def _prep_image(path: str, target: int | None = None) -> str:
     """Normalise an image to the vision model's pixel sweet spot so fine text stays legible.
 
-    Resizes (up OR down) with a sharp LANCZOS filter so the total pixel count is ~HARNESS_VISION_PIXELS
-    (default 1,200,000 — empirically where the 2B reads small text best; bigger regresses). Keeps the
-    aspect ratio, writes a lossless WebP temp (smaller than PNG, identical pixels), and returns its
-    path — or the original path unchanged when already in band or on any error (PIL/WebP missing)."""
+    Resizes (up OR down) with a sharp LANCZOS filter so the total pixel count is ~target pixels
+    (``target``, else HARNESS_VISION_PIXELS, else 1,200,000 — empirically where the 2B reads small
+    text best; bigger regresses. A different VLM has a different sweet spot, so it is overridable per
+    request). Keeps the aspect ratio, writes a lossless WebP temp (smaller than PNG, identical
+    pixels), and returns its path — or the original path unchanged when already in band or on any
+    error (PIL/WebP missing)."""
     try:
         from PIL import Image
     except Exception:
         return path
     try:
-        target = int(os.environ.get("HARNESS_VISION_PIXELS", "1200000"))
+        target = int(target if target else os.environ.get("HARNESS_VISION_PIXELS", "1200000"))
         im = Image.open(path).convert("RGB")
         w, h = im.size
         px = w * h
@@ -157,7 +159,7 @@ class MLXModel(HarnessModel):
         return "".join(chunks)
 
     # --- vision (same model) ---------------------------------------------------------
-    def describe(self, image, prompt: str = "Describe this image.", max_tokens: int = 512, temperature=None) -> str:
+    def describe(self, image, prompt: str = "Describe this image.", max_tokens: int = 512, temperature=None, pixels=None) -> str:
         """Answer a question about an image — using the same weights as text generation.
 
         The image is first normalised to the model's pixel sweet spot (see :func:`_prep_image`):
@@ -169,7 +171,7 @@ class MLXModel(HarnessModel):
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template
 
-        img_path = _prep_image(str(image))
+        img_path = _prep_image(str(image), pixels)
         temp = self.settings.temperature if temperature is None else temperature
         vprompt = apply_chat_template(self.processor, self.config, prompt, num_images=1)
         try:

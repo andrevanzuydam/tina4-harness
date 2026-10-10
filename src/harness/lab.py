@@ -20,6 +20,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+# Some models reason in a different wrapper than Qwen's <think>…</think>: Gemma 4 uses a channel
+# format, <|channel>thought … <channel|>answer. Strip either so routing sees the real answer.
+_CHANNEL = re.compile(r"<\|channel>.*?<channel\|>", re.DOTALL | re.IGNORECASE)
 _FENCE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
 
 _lock = threading.Lock()
@@ -142,12 +145,21 @@ def _generate(messages, max_tokens=700, stream: bool = False, enable_thinking: b
 
 
 def _strip_think(text: str) -> str:
-    # This distill reasons first and closes with </think> (the opening tag comes from its
-    # chat template, so it is not in the generated text). Keep only what follows the reasoning.
-    idx = text.rfind("</think>")
-    if idx != -1:
-        text = text[idx + len("</think>"):]
-    return _THINK.sub("", text).replace("<think>", "").strip()
+    # Models reason first and close with a marker (the opening tag comes from the chat template, so
+    # it is not in the generated text). Keep only what follows the LAST reasoning block, whichever
+    # marker the model uses — Qwen's </think> or Gemma's channel close <channel|>.
+    cut = -1
+    for marker in ("</think>", "<channel|>"):
+        i = text.rfind(marker)
+        if i != -1:
+            cut = max(cut, i + len(marker))
+    if cut != -1:
+        text = text[cut:]
+    text = _THINK.sub("", text)
+    text = _CHANNEL.sub("", text)
+    # Drop any stray channel tag left when the reasoning ran to the end without a clean close.
+    text = re.sub(r"<\|?channel\|?>\w*", "", text)
+    return text.replace("<think>", "").strip()
 
 
 def _code(text: str) -> str:

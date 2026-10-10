@@ -17,6 +17,7 @@ rest of the notebook is unchanged — that separation is the whole point of a ha
 """
 from __future__ import annotations
 
+import os
 import platform
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,9 +29,17 @@ GB = 1024 ** 3
 # The 4-bit MLX port is a local conversion (there is no HF repo for it), copied into the
 # project's models/ folder (~1.6 GB). If that folder is absent (e.g. a fresh clone), the MLX
 # backend falls back to fetching the unquantised HF weights. transformers reads the same HF repo.
-MLX_LOCAL_DIR = "qwen38-2b-distill-4bit"        # preferred: a folder under models/ (~1.6 GB, 4-bit)
-MLX_REPO = "empero-ai/Qwen3.8-2B-Distill"       # fallback if the 4-bit folder is missing (~4.6 GB)
-TORCH_REPO = "empero-ai/Qwen3.8-2B-Distill"     # Windows / Linux / CPU / CUDA (transformers safetensors)
+# The model is swappable via env, so a reader can A/B a different model without editing code:
+#   HARNESS_MLX_REPO=mlx-community/gemma-4-e4b-it-4bit ./scripts/start.sh
+# When a non-default repo is chosen, its local folder defaults to the repo's flat name under
+# models/ (so it never collides with the Qwen 4-bit folder and downloads cleanly on first use).
+_DEFAULT_MLX_REPO = "empero-ai/Qwen3.8-2B-Distill"
+MLX_REPO = os.environ.get("HARNESS_MLX_REPO", _DEFAULT_MLX_REPO)  # fallback if the 4-bit folder is missing
+MLX_LOCAL_DIR = os.environ.get(
+    "HARNESS_MLX_LOCAL_DIR",
+    "qwen38-2b-distill-4bit" if MLX_REPO == _DEFAULT_MLX_REPO else MLX_REPO.replace("/", "__"),
+)  # preferred: a folder under models/ (the Qwen default is ~1.6 GB, 4-bit)
+TORCH_REPO = os.environ.get("HARNESS_TORCH_REPO", MLX_REPO)  # Windows / Linux / CPU / CUDA (transformers)
 
 
 @dataclass

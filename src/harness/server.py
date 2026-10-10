@@ -134,9 +134,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _describe(self, d: dict) -> None:
         model = _get()
+        px = d.get("pixels")
         with _model_lock:
             text = model.describe(d["image"], d.get("prompt", "Describe this image."),
-                                  max_tokens=int(d.get("max_tokens", 512)))
+                                  max_tokens=int(d.get("max_tokens", 512)),
+                                  pixels=int(px) if px else None)
         self._send_json({"text": text})
 
 

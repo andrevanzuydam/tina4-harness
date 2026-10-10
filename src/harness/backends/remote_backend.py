@@ -80,8 +80,11 @@ class RemoteModel(HarnessModel):
         return "".join(parts)
 
     # --- vision (same shared model) --------------------------------------------------
-    def describe(self, image, prompt: str = "Describe this image.", max_tokens: int = 512, temperature=None) -> str:
-        out = self._post("/describe", {"image": str(image), "prompt": prompt, "max_tokens": max_tokens})
+    def describe(self, image, prompt: str = "Describe this image.", max_tokens: int = 512, temperature=None, pixels=None) -> str:
+        payload = {"image": str(image), "prompt": prompt, "max_tokens": max_tokens}
+        if pixels:
+            payload["pixels"] = int(pixels)
+        out = self._post("/describe", payload)
         if "error" in out:
             raise RuntimeError(out["error"])
         return out.get("text", "")
