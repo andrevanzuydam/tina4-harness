@@ -778,17 +778,55 @@ def _gitignore_path(path) -> None:
         pass
 
 
+_TINA4_MISSING = (
+    "To spin up a web app I use the **tina4** client (the Rust CLI) — `tina4 init` scaffolds the "
+    "project and `tina4 serve` runs it. It isn't installed / on PATH here, so I can't provision one "
+    "yet.\n\nInstall it (needs internet):\n```bash\ncurl -fsSL https://tina4.com/install.sh | sh\n```\n"
+    "Then ask me again. Heads-up: the *first* `tina4 init` also downloads the Python runtime and the "
+    "tina4 framework package, so initial setup needs a connection — after that, serving and adding "
+    "routes/pages work fully offline."
+)
+
+
+def _looks_offline(msg: str) -> bool:
+    return bool(re.search(
+        r"could not resolve|name or service not known|temporary failure in name resolution|"
+        r"no address associated|failed to (?:download|fetch|resolve)|network is unreachable|"
+        r"connection (?:refused|timed out|reset)|timed out|offline|proxyerror|"
+        r"max retries exceeded|getaddrinfo|ssl|certificate|resolve host|no route to host|"
+        r"pypi|crates\.io|tina4\.com",
+        msg, re.I,
+    ))
+
+
 def _new_tina4_app(text: str) -> str:
     """Provision a new Tina4 Python app in the notebook area, start it, and open the preview."""
     from pathlib import Path
 
     from . import tina4
 
+    # Tell the user about tina4 up front instead of surfacing a raw FileNotFoundError.
+    if not tina4.available():
+        return _TINA4_MISSING
+
     name = tina4._slug(_app_name(text))
     dest = Path.cwd() / name
     if not dest.exists() or not tina4.is_project(dest):
         _status(f"⬇️ provisioning tina4 app '{name}' (uv sync)…")
-        tina4.init(dest)
+        try:
+            tina4.init(dest)
+        except Exception as exc:
+            if _looks_offline(str(exc)):
+                return (
+                    f"I couldn't provision **{name}** offline. `tina4 init` runs `uv sync`, which "
+                    "reuses the uv cache (`~/.cache/uv`) when it can — so with the client installed and "
+                    "the tina4 packages already cached, provisioning works offline. This time it "
+                    "needed something not in the cache (a runtime or a framework version not synced "
+                    "yet) and couldn't reach the network.\n\nDo one online `tina4 init` (or `uv sync`) "
+                    "to warm the cache; after that, provisioning, `tina4 serve`, and adding "
+                    f"routes/pages all work offline.\n\nDetail: {exc}"
+                )
+            return f"Could not provision the Tina4 app **{name}**: {exc}"
         _gitignore_path(dest)  # keep the harness repo clean — provisioned apps are local artifacts
     port = tina4.free_port(7146)
     _status(f"🚀 starting tina4 serve on :{port}…")
