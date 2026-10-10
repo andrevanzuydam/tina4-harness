@@ -13,6 +13,7 @@ plan file is updated in the SAME turn progress is claimed.
 |---------|------|--------|
 | Notebook chat UX (multi-cell, bulk ops, edit-in-place, decoupling) | [notebook-chat-ux.md](notebook-chat-ux.md) | ✅ Complete |
 | Model-agnostic swap + Gemma proof-of-use | [model-swap-gemma.md](model-swap-gemma.md) | ✅ Complete |
+| Honest, self-checking, collaborative harness | [harness-honesty.md](harness-honesty.md) | ✅ Complete (living) |
 | Offline-user scenario quality gate | [scenario-quality-gate.md](scenario-quality-gate.md) | 🟡 Ongoing (living suite) |
 
 ## Conventions (tina4-developer-python)

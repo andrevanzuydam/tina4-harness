@@ -233,6 +233,11 @@ _CHAT_SYSTEM = (
     "Python module (`import antigravity`), not anything else. Code you write is inserted and run as a "
     "NEW NOTEBOOK CELL automatically.\n\n"
     "RULES:\n"
+    "- IF YOU ARE NOT SURE what the user wants, ASK — do not just do something. When the request is "
+    "ambiguous, refers to something you cannot identify (which file? which function? what exactly?), "
+    "or is missing a detail you need to proceed, reply with ONE short clarifying question and nothing "
+    "else — never guess a target or invent a task. When the request IS clear, act on it directly and "
+    "do NOT ask needless questions. A wrong guess wastes the user's time; one short question does not.\n"
     "- DECIDE THE FORM from the request. If the user wants code WRITTEN or CHANGED, reply with a "
     "```python code block FIRST (plus at most one short sentence). If they want an EXPLANATION, a "
     "fact, or to discuss or learn, EXPLAIN in words — do NOT open with a code block. The notebook "
@@ -1323,6 +1328,23 @@ def _run_summary(res: dict) -> str:
     return "ran with no output or error"
 
 
+def _safe_to_run(code: str) -> bool:
+    """Safe to AUTO-run for self-validation (before the user has chosen to run it): no stdin, and no
+    destructive / filesystem-writing / network / process side effects. We would rather skip
+    validating risky model output than execute it silently — the goal is to catch hallucinated
+    imports/APIs in ordinary code, not to run `os.remove` or a network call on the user's behalf."""
+    if re.search(r"(?<![\w.])input\s*\(", code):
+        return False
+    return not re.search(
+        r"\bos\.(remove|unlink|rmdir|removedirs|rename|replace|system|truncate)\b"
+        r"|\bshutil\.(rmtree|move|copy\w*)\b|\bsubprocess\b|\bPopen\b|\bos\.popen\b"
+        r"|\bopen\s*\([^)]*['\"][wax]\+?['\"]|\bpathlib\b.*\.(write_\w+|unlink|rmdir)"
+        r"|\.write_(text|bytes)\s*\(|\bsocket\b|\brequests\.|\burllib\b|\bhttpx\b|\bsmtplib\b"
+        r"|\bsys\.exit\b|\bexit\s*\(|\bquit\s*\(|\b__import__\b",
+        code,
+    )
+
+
 def _probe_calls(code: str, max_calls: int = 4) -> str:
     """Build a snippet that CALLS each top-level function with simple, distinct arguments and prints
     the result — so two versions of a cell can be compared by what they actually produce, not by how
@@ -2111,6 +2133,55 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         r"\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)\w*", last_user, re.I))
     if notebook_code and not is_revision:
         tidied = _strip_redefs_in_reply(tidied, _defined_names(notebook_code))
+    # SELF-CHECK: run newly generated code BEFORE it is pasted. If it crashes (a hallucinated import
+    # or API is the common cause), ground the error against reality and retry; after a couple of
+    # honest tries that still fail, DON'T pretend it works — hand the attempt back as a chat message
+    # with the real error and ask the user, instead of auto-inserting broken code. (The user is
+    # working WITH the harness toward a solution.) Edits/fixes are skipped (they lean on prior cells
+    # and are validated separately); risky side-effecting code is skipped rather than run silently.
+    if intent == "code" and not is_revision and not _stopped:
+        mv = _FENCE.search(tidied)
+        code0 = mv.group(1) if mv else ""
+        if code0 and _valid_python(code0)[0] and _safe_to_run(code0):
+            run = _run_in_kernel(code0)
+            err = run.get("error") if not run.get("skipped") else None
+            best, attempts = tidied, 0
+            while err and attempts < 2 and not _stopped:
+                attempts += 1
+                _status("↻ checking my code by running it…")
+                fixsys = system_text + (
+                    f"\n\nYou wrote code that FAILED when run:\n{err}\nReturn the COMPLETE corrected "
+                    "code as ONE ```python block that runs with NO error. Use ONLY real, existing "
+                    "names — do NOT invent imports, classes, methods or attributes."
+                    + _ground_import_error(err))
+                try:
+                    rt = _tidy_chat(_strip_think(_generate(
+                        [{"role": "system", "content": fixsys}] + recent, chat_cap,
+                        enable_thinking=enable_thinking)), as_tool="tool" in last_user.lower())
+                except Exception:
+                    break
+                mr = _FENCE.search(rt)
+                if not mr or _is_placeholder(mr.group(1)) or not _valid_python(mr.group(1))[0]:
+                    continue
+                best = rt
+                r2 = _run_in_kernel(mr.group(1))
+                if not (r2.get("error") and not r2.get("skipped")):
+                    tidied, err = rt, None   # verified: runs clean
+                    break
+                err = r2.get("error")
+            if err:
+                # Honest deferral: show the best attempt + the real error, ask the user — don't paste.
+                last = err.strip().splitlines()[-1][:200]
+                ground = _ground_import_error(err)
+                why = ""
+                if "GROUNDED FACT" in ground:
+                    why = " " + ground.split("GROUNDED FACT", 1)[1].split(":", 1)[-1].strip()[:260]
+                b = _FENCE.search(best)
+                attempt = b.group(1) if b else code0
+                note = (f"I checked this by running it and it still fails: `{last}`.{why}\n\nI couldn't "
+                        "get it to run cleanly on my own — here's my best attempt. Can you point me at "
+                        "the right approach (or confirm the API)?")
+                return _MODE_ASK + _with_marker(mark, note + f"\n\n```python\n{attempt}\n```")
     # "add 2 cells — one for code and one to test it": the 2B won't emit two blocks, so split the
     # function into its own cell and generate a REAL test (assert) for it as a second cell.
     if multi_cell and re.search(r"\btest", last_user, re.I):
