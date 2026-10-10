@@ -1960,11 +1960,19 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     # conceptual) decides the framing, not whether the code is present.
     about_code = not conceptual
     if output:
-        system_text += (
-            "\n\nThe active cell's latest OUTPUT / ERROR is below. If the user is asking about it, or "
-            "something isn't working, use it to find the cause and FIX it — the code is already in this "
-            "message, so NEVER ask the user to share it again:\n" + output[-1800:]
-        )
+        if intent == "ask":
+            system_text += (
+                "\n\nThe active cell's latest OUTPUT / ERROR is below. The user is ASKING about it — "
+                "EXPLAIN in plain words what it means and what causes it; LEAD WITH PROSE, not a code "
+                "block (a short corrected snippet may come after). The code is already in this message, "
+                "so NEVER ask the user to share it:\n" + output[-1800:]
+            )
+        else:
+            system_text += (
+                "\n\nThe active cell's latest OUTPUT / ERROR is below. If it is an error, use it to find "
+                "the cause and FIX it — the code is already in this message, so NEVER ask the user to "
+                "share it again:\n" + output[-1800:]
+            )
         # Ground an import/attribute error against the REAL module so the model stops inventing an API
         # (e.g. 'from antigravity import Client') or suggesting an install for a module already present.
         system_text += _ground_import_error(output)
