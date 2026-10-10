@@ -1240,14 +1240,20 @@ class ChatPanel extends Widget {
     const active: Cell | null =
       (this._snapCell && !this._snapCell.isDisposed ? this._snapCell : null) || panel.content.activeCell;
     this._snapCell = null;
-    // "remove from cell 3" / "edit cell 2" → target THAT cell by position (1-based, matching the
-    // "Cell N" labels the harness prints), whatever is currently selected.
+    // "remove from cell 3" / "edit cell 2" → target THAT cell, whatever is selected. "Cell 3" is
+    // resolved the way a user most likely means it: first the cell whose [3] execution count shows
+    // in the margin (what they actually see), and if that's absent/ambiguous, the 3rd cell by
+    // position (which matches the "Cell N" labels the harness prints).
     const cellNumMatch = text.match(/\bcell\s*#?\s*(\d+)\b/i);
     let targetCell: Cell | null = null;
     if (cellNumMatch) {
-      const idx = parseInt(cellNumMatch[1], 10) - 1;
-      if (idx >= 0 && idx < panel.content.widgets.length) {
-        targetCell = panel.content.widgets[idx];
+      const n = parseInt(cellNumMatch[1], 10);
+      const cells = panel.content.widgets;
+      const byExec = cells.filter(c => ((c.model as { executionCount?: number }).executionCount) === n);
+      if (byExec.length === 1) {
+        targetCell = byExec[0];                       // the visible [N] in the margin
+      } else if (n >= 1 && n <= cells.length) {
+        targetCell = cells[n - 1];                    // fall back to position
       }
     }
     if (!sel && active) {
