@@ -55,6 +55,15 @@ _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "b
               "target", ".ipynb_checkpoints", ".tina4", ".tina4-docs", "logs", "site-packages",
               ".mypy_cache", ".pytest_cache", ".ruff_cache", ".idea", ".vscode", "coverage"}
 
+
+def _vendored(parts) -> bool:
+    """A path lives in a vendored/dependency/build dir we must never index or load from — the named
+    dirs above OR any virtualenv (`.venv`, `.venv-notebook`, `.venv311`, …). This is what kept the
+    chat from 'loading' a JupyterLab schema out of .venv-notebook/share/."""
+    parts = set(parts)
+    return bool(_SKIP_DIRS & parts) or any(p.startswith(".venv") for p in parts)
+
+
 _index = None
 _indexed_path = None
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -114,7 +123,7 @@ def index(path: Path | str, k: int = 5, max_words: int = 80, max_files: int = 60
             continue
         if f.suffix.lower() not in CODE_EXT and f.name not in CODE_NAMES:
             continue
-        if _SKIP_DIRS & set(f.parts):
+        if _vendored(f.parts):
             continue
         try:
             if f.stat().st_size > 250_000:
@@ -180,7 +189,7 @@ def list_files(pattern: str = "*.py", limit: int = 40) -> list[str]:
     root = _repo_root()
     hits = []
     for f in root.rglob(pattern):
-        if f.is_file() and not (_SKIP_DIRS & set(f.parts)):
+        if f.is_file() and not (_vendored(f.parts)):
             hits.append(str(f.relative_to(root)))
             if len(hits) >= limit:
                 break
@@ -230,7 +239,7 @@ def _candidate_files(limit: int = 8000) -> list[Path]:
                     break
                 if not f.is_file() or f.suffix.lower() not in CODE_EXT:
                     continue
-                if _SKIP_DIRS & set(f.parts) or ".ipynb_checkpoints" in f.parts:
+                if _vendored(f.parts) or ".ipynb_checkpoints" in f.parts:
                     continue
                 files.append(f)
         except Exception:
@@ -477,7 +486,7 @@ def program_overview(limit: int = 50) -> str:
     root = _repo_root()
     files = []
     for f in sorted(root.rglob("*.py")):
-        if _SKIP_DIRS & set(f.parts) or ".ipynb_checkpoints" in f.parts:
+        if _vendored(f.parts) or ".ipynb_checkpoints" in f.parts:
             continue
         files.append(f)
     total = len(files)

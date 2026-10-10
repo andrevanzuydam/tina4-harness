@@ -526,9 +526,10 @@ def _is_load_request(text: str) -> bool:
         return False
     if _FILE_RE.search(t) and re.search(r"\b(" + _LOAD_VERB + r")\b", t, re.I):
         return True
-    if re.search(r"\b(" + _LOAD_VERB + r")\b.*\b(the\s+)?(code|file|source|script)\b", t, re.I):
-        return True
-    return bool(re.search(r"\bload\s+(it|this|that|the code|the file)\b", t, re.I))
+    # "load the code / load it" is a deliberate load-from-context — but ONLY the explicit verb
+    # "load/open/read/import/paste". "show me the code" / "write the code" are DISPLAY/WRITE requests,
+    # not file opens (and in an image context mean the code shown in the image) — let them fall through.
+    return bool(re.search(r"\b(load|open|read|import|paste|pull up|bring up)\s+(it|this|that|the\s+(code|file|source|script))\b", t, re.I))
 
 
 def _recent_file_hint(messages: list) -> str:

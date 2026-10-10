@@ -1276,6 +1276,61 @@ class ChatPanel extends Widget {
     const namesFile = !!imageName && text.toLowerCase().includes(imageName);  // full "python.png"
     const aboutImage =
       !!imagePath && !notVision && (imageNoun || perceptionVerb || asksWhatsInIt || namesFile);
+
+    // "show/write/run the code (in the image)" → transcribe the code FROM the image (vision) and put
+    // it in a cell, so the IMAGE context flows into the ACTION — not just a chat description. This is
+    // the answer to "show me the code" when an image is the context.
+    const wantsCodeFromImage =
+      !!imagePath &&
+      /\b(code|snippet|script|program|command|example|line)\b/i.test(text) &&
+      /\b(show|write|type|get|extract|transcrib|copy|reproduc|recreat|run|use|try|make|working|put|add)\b/i.test(text);
+    if (imagePath && wantsCodeFromImage) {
+      const toNewNotebook = /\b(new|fresh|another|separate|blank)\s+notebook\b/i.test(text);
+      this._messages.push({ role: 'user', content: text });
+      await this._append('user', text + `\n\n🖼 code from ${imageName}`);
+      this._send.disabled = true;
+      const pending = await this._append('assistant', 'reading the code in the image…');
+      try {
+        const kernel = await this._brainKernel();
+        // Phrasing matters: "transcribe as runnable Python" makes the small model emit a template
+        // placeholder; "list every line of code visible, verbatim" makes it actually READ the image.
+        const q =
+          'List every line of Python code visible in this image, verbatim, as one ```python code ' +
+          'block. Only the code shown — no commentary, no explanation, no placeholders.';
+        const answer = await kernelEdit(kernel, 'vision', { image: imagePath, question: q }, (s: string) => {
+          pending.textContent = s;
+        });
+        pending.remove();
+        const { blocks } = splitCode(answer);
+        let code = blocks.length ? blocks[blocks.length - 1] : '';
+        // Guard: the small model sometimes fills a code block with a bracketed placeholder instead of
+        // reading the image. Don't insert that — show the raw answer so the user can retry.
+        if (/^\s*\[[^\]]*\]\s*$/.test(code) || /\b(your code here|complete,?\s*runnable solution|implementation here|solution with docstring)\b/i.test(code)) {
+          code = '';
+        }
+        if (!code) {
+          this._messages.push({ role: 'assistant', content: answer });
+          await this._append('assistant', answer || "I couldn't read any code in the image.");
+        } else {
+          const nb = await this._ensureNotebook(toNewNotebook ? null : panel);
+          const cell = insertBelowWithSource(nb, code);
+          nb.content.activeCellIndex = nb.content.widgets.indexOf(cell);
+          const readsInput = code.split('\n').some(l => /\binput\s*\(/.test(l) && !/^\s/.test(l) && !l.trimStart().startsWith('#'));
+          if (!readsInput) {
+            await runCell(nb, cell);
+          }
+          this._messages.push({ role: 'assistant', content: '```python\n' + code + '\n```' });
+          await this._append('assistant', `📝 Wrote the code from ${imageName} into a cell${readsInput ? '' : ' and ran it'}.`);
+        }
+        this._save();
+      } catch (e: any) {
+        pending.remove();
+        await this._append('assistant', 'Error: ' + e.message);
+      } finally {
+        this._send.disabled = false;
+      }
+      return;
+    }
     if (imagePath && aboutImage) {
       this._messages.push({ role: 'user', content: text });
       await this._append('user', text + `\n\n🖼 about ${imagePath}`);

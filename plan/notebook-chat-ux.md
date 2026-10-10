@@ -36,6 +36,14 @@ and edit code in the right place, run it, manage cells, and converse — without
       filename) AND must not be a notebook/code action.
 - [x] "…in a new notebook" did not create a notebook. Added `wantsNewNotebook`: open a fresh notebook
       and route as code so the brain writes the code into it.
+- [x] "show me the code" (image context) → LOADED a random venv file (.venv-notebook/share/.../
+      about.json). Root causes: (1) `_is_load_request` treated any load-verb + "the code" as a file
+      open — tightened so only the explicit verbs load, and only with a real filename or "load it/the
+      code"; (2) `.venv-notebook` was not skipped — added `_vendored()` that skips any `.venv*`.
+- [x] Image context did not flow into the ACTION. Added an image→code path: with an image open,
+      "show/write/run the code" transcribes the code FROM the image (vision) and places+runs it (new
+      notebook if asked). Prompt tuned ("list every line of code visible, verbatim") + placeholder
+      guard, since the 2B emits a template placeholder for "transcribe as runnable Python".
 
 ## Commits
 - d9679f7  multi-cell code+test, bulk notebook ops, repo-routing + vision-intercept fixes
