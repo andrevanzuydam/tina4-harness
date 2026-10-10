@@ -998,9 +998,11 @@ class ChatPanel extends Widget {
   private async _applyFix(
     panel: NotebookPanel,
     code: string,
-    sel: { cell: Cell; from: number; to: number } | null
+    sel: { cell: Cell; from: number; to: number } | null,
+    targetCell: Cell | null = null
   ): Promise<void> {
-    const cell = sel ? sel.cell : panel.content.activeCell;
+    // A named "cell N" wins over the selection/active cell.
+    const cell = targetCell ?? (sel ? sel.cell : panel.content.activeCell);
     if (!cell) {
       await this._append('assistant', 'Select the code to fix, or click the cell with the error, then ask again.');
       return;
@@ -1238,6 +1240,16 @@ class ChatPanel extends Widget {
     const active: Cell | null =
       (this._snapCell && !this._snapCell.isDisposed ? this._snapCell : null) || panel.content.activeCell;
     this._snapCell = null;
+    // "remove from cell 3" / "edit cell 2" → target THAT cell by position (1-based, matching the
+    // "Cell N" labels the harness prints), whatever is currently selected.
+    const cellNumMatch = text.match(/\bcell\s*#?\s*(\d+)\b/i);
+    let targetCell: Cell | null = null;
+    if (cellNumMatch) {
+      const idx = parseInt(cellNumMatch[1], 10) - 1;
+      if (idx >= 0 && idx < panel.content.widgets.length) {
+        targetCell = panel.content.widgets[idx];
+      }
+    }
     if (!sel && active) {
       const r = selectionOf(active);
       if (r.scope === 'selection') {
@@ -1291,6 +1303,12 @@ class ChatPanel extends Widget {
     if (!context && active && mode !== 'create') {
       context = active.model.sharedModel.getSource();
     }
+    // A named "cell N" overrides the selection: act on THAT cell and feed its code as context
+    // (mode is already 'fix' for an edit verb, 'ask' for a question about it).
+    if (targetCell) {
+      context = targetCell.model.sharedModel.getSource();
+      sel = null;
+    }
 
     // Bare "help" with no cell to look at: ask which cell rather than inventing an answer.
     if (bareHelp && !(context && context.trim())) {
@@ -1305,7 +1323,7 @@ class ChatPanel extends Widget {
     this._messages.push({ role: 'user', content: text });
     await this._append('user', text);
     // A terse note of what it's looking at — only when it's actually working on an existing cell.
-    const ctxCell: Cell | null = sel ? sel.cell : active;
+    const ctxCell: Cell | null = targetCell ?? (sel ? sel.cell : active);
     if (ctxCell && context && context.trim() && (sel || mode === 'fix' || hasError || bareHelp)) {
       const n = panel.content.widgets.indexOf(ctxCell) + 1;
       await this._append('context', `Taking a look at Cell ${n}${hasError ? ' — fixing the error' : ''}`);
@@ -1516,7 +1534,7 @@ class ChatPanel extends Widget {
         }
         for (const code of blocks) {
           if (mode === 'fix') {
-            await this._applyFix(panel, code, sel);   // edit in place — never append
+            await this._applyFix(panel, code, sel, targetCell);   // edit in place — never append
           } else {
             await this._offerCode(panel, code, sel, false);
           }
