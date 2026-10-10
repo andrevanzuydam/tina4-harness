@@ -44,6 +44,11 @@ and edit code in the right place, run it, manage cells, and converse — without
       "show/write/run the code" transcribes the code FROM the image (vision) and places+runs it (new
       notebook if asked). Prompt tuned ("list every line of code visible, verbatim") + placeholder
       guard, since the 2B emits a template placeholder for "transcribe as runnable Python".
+- [x] "What is happening?" (image open) → text brain returned a BRACKETED PLACEHOLDER
+      ("[Analyze the situation, consider multiple hypotheses…]"). Two fixes: (1) a situational
+      question with an image open now routes to vision (describes the image), unlike a concept
+      question ("what is a decorator?"); (2) the ask path now detects a placeholder reply and retries
+      firmly for a direct answer, else asks the user to be specific — never prints the template.
 
 ## Commits
 - d9679f7  multi-cell code+test, bulk notebook ops, repo-routing + vision-intercept fixes

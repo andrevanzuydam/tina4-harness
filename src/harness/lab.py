@@ -2016,6 +2016,22 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                     detail = "I didn't find a behaviour problem — if it should do something different, tell me"
                 reply = (reply + "\n\n" if reply else "") + f"_✅ Validated by running it: {ran} — {detail}._"
             return (_FIX_SENTINEL if offer_fix else "") + _cap_prose(reply, 8000)
+        # The small model sometimes answers a vague prompt with a TEMPLATE of an answer in brackets
+        # ("[Analyze the situation, consider multiple hypotheses…]") instead of answering. Don't show
+        # that — retry once, firmly, for a direct answer; if it still stalls, ask the user to be
+        # specific rather than printing a placeholder.
+        if _is_placeholder(reply) and not _stopped:
+            _status("↻ answering directly…")
+            firm = system_text + ("\n\nAnswer the user's question DIRECTLY in plain prose. Do NOT "
+                "describe what a good answer would contain, do NOT output a template or bracketed "
+                "placeholder, do NOT use square brackets around meta-instructions — just answer.")
+            reply2 = _strip_think(_generate([{"role": "system", "content": firm}] + recent, gen_cap,
+                                            enable_thinking=False))
+            if reply2.strip() and not _is_placeholder(reply2):
+                reply = reply2
+            else:
+                reply = ("I need a bit more to go on — tell me what you'd like (e.g. a specific "
+                         "question, a cell to look at, or 'describe the open image').")
         # A clarifying question with a short option list → let the UI show clickable pills.
         choices = _as_choices(reply)
         if choices:

@@ -1274,8 +1274,16 @@ class ChatPanel extends Widget {
     const perceptionVerb = /\b(see|look|view|read|describe|transcribe|identify|recogni[sz]e|zoom|depict|visible|colou?rs?)\b/i.test(text);
     const asksWhatsInIt = /\bwhat(?:'?s| is| are| does)?\b.*\b(in|on|this|that|the|it)\b.*\b(image|picture|photo|comic|screenshot|figure|drawing|it)\b/i.test(text);
     const namesFile = !!imageName && text.toLowerCase().includes(imageName);  // full "python.png"
+    // A SITUATIONAL question ("what is happening?", "what's this?", "explain the joke") refers to the
+    // thing in front of the user — the image — unlike a CONCEPT question ("what is a decorator?")
+    // which names a topic. With an image open and no competing notebook/code intent, the former is a
+    // vision question; this is what keeps a vague prompt off the text brain (which emits placeholders).
+    const isSituationalQuestion =
+      /\bwhat(?:'?s| is| are| does)?\s+(happening|going on|this|that|up|here|wrong|the (?:point|joke|comic|image)|so funny|funny)\b/i.test(text) ||
+      /\bwhat am i (?:looking at|seeing|reading)\b/i.test(text) ||
+      /\b(explain|describe)\s+(this|it|the (?:comic|image|picture|joke|drawing))\b/i.test(text);
     const aboutImage =
-      !!imagePath && !notVision && (imageNoun || perceptionVerb || asksWhatsInIt || namesFile);
+      !!imagePath && !notVision && (imageNoun || perceptionVerb || asksWhatsInIt || namesFile || isSituationalQuestion);
 
     // "show/write/run the code (in the image)" → transcribe the code FROM the image (vision) and put
     // it in a cell, so the IMAGE context flows into the ACTION — not just a chat description. This is
