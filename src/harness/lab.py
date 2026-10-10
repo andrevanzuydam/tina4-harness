@@ -233,9 +233,11 @@ _CHAT_SYSTEM = (
     "of |, +, _, / and \\; they render as garbage. To show a flow or how parts connect (requests, "
     "client-server, a protocol), use a NUMBERED LIST or `A -> B -> C`, never a drawing. Markdown "
     "tables are fine. Give the current TIME as HH:MM when asked the time.\n"
-    "- BE CONCISE — do not bombard the user with reading. Lead with the key point, keep it short, "
-    "prefer a few bullets over long paragraphs, and invite the user to ask for more rather than "
-    "dumping everything at once. A short answer they can act on beats a wall of text.\n"
+    "- KEEP EXPLANATIONS SHORT — this is the most important rule for answers. At most ~4 short "
+    "bullets OR 2-3 short sentences. Give ONLY the essentials; do NOT write multiple ## sections, "
+    "long paragraphs, or exhaustive detail. End with one short line inviting the user to ask for "
+    "more (e.g. 'Want more detail on any of these?'). The user will ask if they want depth — a short "
+    "answer they can act on beats a wall of text, every time.\n"
     "- Reply with AT MOST ONE ```python code block plus one short sentence of prose. ALWAYS write the "
     "real, complete, runnable code — NEVER a placeholder like '[your code here]' or '[complete solution]'.\n"
     "- For a build/create/write-code request, go STRAIGHT to the code block. Do NOT write a plan, an "
@@ -464,6 +466,19 @@ _CALL_STOPWORDS = {
     "call", "invoke", "run", "execute", "the", "function", "method", "func", "def", "please",
     "and", "with", "for", "use", "using", "that", "this", "it", "cell", "notebook", "print",
     "show", "result", "output", "example", "code", "file", "from", "into", "new", "make",
+}
+
+# Common words that also happen to be file names in sample repos — they must NOT route a general
+# concept question ("how do I read a file?", "what is a websocket?") to repo Q&A. An IR stopword
+# list for the filename match, not intent routing.
+_COMMON_WORDS = {
+    "file", "files", "read", "write", "text", "data", "code", "app", "main", "test", "tests",
+    "input", "output", "print", "string", "number", "numbers", "list", "lists", "time", "date",
+    "line", "lines", "open", "close", "loop", "error", "image", "images", "json", "html", "css",
+    "server", "client", "request", "response", "websocket", "socket", "api", "http", "https",
+    "class", "object", "value", "values", "index", "array", "dict", "table", "database", "query",
+    "function", "method", "variable", "example", "sample", "program", "script", "module", "package",
+    "python", "work", "works", "working", "about", "stuff", "thing", "things", "stream", "buffer",
 }
 
 # File extensions a "load this file" request may name (kept in sync with repo.CODE_EXT spirit).
@@ -1493,10 +1508,12 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         explore = re.search(r"\b(what|how|where|explain|summar|describe|review|does|show)\b", last_user, re.I)
         refs_code = False
         if explore and not strong:
-            # Only treat it as a REPO question when the user names an actual FILE in the workspace —
-            # a fuzzy definition match hijacks general questions ("websocket" -> some floodfill.py).
+            # Only treat it as a REPO question when the user names a DISTINCTIVE file in the workspace.
+            # Common words ("file", "read", "websocket", "server") happen to match sample files and
+            # hijack general concept questions — those belong in the normal (stdlib-grounded) answer.
             toks = [t for t in re.findall(r"[A-Za-z_]\w{2,}", last_user)
-                    if t.lower() not in _CALL_STOPWORDS and len(t) >= 4][:6]
+                    if t.lower() not in _CALL_STOPWORDS and t.lower() not in _COMMON_WORDS
+                    and len(t) >= 5][:6]
             try:
                 refs_code = any(_repo.find_file(t, exact=True) or _repo.find_file(t + ".py", exact=True)
                                 for t in toks)
@@ -1771,9 +1788,15 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                                 "share it again; use it directly):\n```python\n"
                                 + context.strip()[:4000] + "\n```")
                 break
+    # A plain explanation is kept SHORT by a small budget (no thinking) — the user asks for more if
+    # they want depth. Code and help/fix keep the full budget (they need room for the code). This
+    # also starves the small model's tendency to ramble into a repetition loop.
+    gen_cap, gen_think = chat_cap, enable_thinking
+    if intent == "ask" and not cell_help:
+        gen_cap, gen_think = min(chat_cap, 320), False
     _status("💭 thinking…")
-    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, chat_cap,
-                                    stream=True, enable_thinking=enable_thinking))
+    reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, gen_cap,
+                                    stream=True, enable_thinking=gen_think))
     # NLP routing by OUTPUT FORM: the model reliably writes CODE for a code request and PROSE for a
     # question, so its own answer decides ask-vs-code — a misrouted intent from the UI self-corrects
     # here. (Help/fix/assertion already fixed intent to 'ask' via cell_help; leave those.)
@@ -1873,7 +1896,8 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         if choices:
             import json as _json
             return _CHOICES_SENTINEL + _json.dumps(choices)
-        return _MODE_ASK + _with_marker(mark, _cap_prose(reply, 8000))  # explanation — nothing inserted
+        # Keep explanations short (the user can ask for more); code/help kept full above.
+        return _MODE_ASK + _with_marker(mark, _cap_prose(reply, 1100))
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).
     m = _FENCE.search(tidied)
