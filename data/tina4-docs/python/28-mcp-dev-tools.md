@@ -1,0 +1,333 @@
+# Chapter 28: MCP Dev Tools
+
+## 1. What is MCP?
+
+The Model Context Protocol connects AI coding tools to your running application. Claude Code, Cursor, and other assistants speak this protocol. When they connect, they see your database, routes, templates, and files -- not as static text, but as live, queryable tools.
+
+Tina4 ships a built-in MCP server. It starts automatically in dev mode. No configuration needed.
+
+---
+
+## 2. How It Works
+
+Set `TINA4_DEBUG=true` in your `.env` file and start the server:
+
+```bash
+tina4 serve
+```
+
+The console prints:
+
+```
+MCP server available at http://localhost:7146/__dev/mcp
+```
+
+Tina4 writes the connection details to `.claude/settings.json` automatically. Claude Code discovers the server on its next restart. Cursor reads the same file.
+
+### Localhost-Only Security
+
+The built-in MCP server activates only when two conditions hold:
+
+1. `TINA4_DEBUG=true`
+2. The server runs on `localhost`, `127.0.0.1`, or `0.0.0.0`
+
+Deploy to a remote server and the MCP endpoint vanishes -- even with debug enabled. This prevents accidental exposure of database queries and file editing in production.
+
+To enable on a staging server (rare, intentional), set:
+
+```bash
+TINA4_MCP_REMOTE=true
+```
+
+---
+
+## 3. Connecting AI Tools
+
+### Claude Code
+
+Tina4 auto-generates `.claude/settings.json` with the current Streamable HTTP transport:
+
+```json
+{
+  "mcpServers": {
+    "tina4-dev": {
+      "type": "http",
+      "url": "http://localhost:7146/__dev/mcp"
+    }
+  }
+}
+```
+
+Restart Claude Code. It connects and lists the tools.
+
+Prefer the command line? Register the same server in one step:
+
+```bash
+claude mcp add --transport http tina4-dev http://localhost:7146/__dev/mcp
+```
+
+### Cursor
+
+Copy the same MCP config into Cursor's settings. The `type` and `url` are identical.
+
+### Manual Connection
+
+Any modern MCP client talks to a single endpoint:
+
+- **Streamable HTTP**: `POST http://localhost:7146/__dev/mcp` -- send JSON-RPC 2.0 and read the response inline. `initialize` returns an `Mcp-Session-Id` header; send it back on later calls. `DELETE` on the same URL ends the session.
+
+Older clients that speak the 2024-11-05 HTTP+SSE transport keep working:
+
+- **SSE handshake** (legacy): `GET http://localhost:7146/__dev/mcp/sse` -- returns the message endpoint URL
+- **Message endpoint** (legacy): `POST http://localhost:7146/__dev/mcp/message` -- accepts JSON-RPC 2.0 messages
+
+---
+
+## 4. Built-in Tools
+
+The MCP server exposes 48 tools organized by category. The exact list lives in `tina4_python/mcp/tools.py` -- the registration block at the bottom of that file is authoritative.
+
+### Database
+
+| Tool | Description |
+|------|-------------|
+| `database_query` | Execute a read-only SQL query (SELECT) |
+| `database_execute` | Execute arbitrary SQL (INSERT, UPDATE, DELETE, DDL) |
+| `database_tables` | List all tables in the database |
+| `database_columns` | Get column definitions for a specific table |
+
+Example -- an AI assistant queries your database directly:
+
+```
+Tool: database_query
+Arguments: {"sql": "SELECT id, name, email FROM users WHERE active = 1"}
+```
+
+The `database_execute` tool handles write operations. It commits automatically after each statement.
+
+### Routes
+
+| Tool | Description |
+|------|-------------|
+| `route_list` | List all registered routes with methods and auth status |
+| `route_test` | Call a route and return status, body, and headers |
+| `swagger_spec` | Return the full OpenAPI 3.0.3 specification |
+
+The `route_test` tool lets an AI assistant verify endpoints without leaving the conversation:
+
+```
+Tool: route_test
+Arguments: {"method": "GET", "path": "/api/users"}
+```
+
+### Templates
+
+| Tool | Description |
+|------|-------------|
+| `template_render` | Render a Frond template string with provided data |
+
+Useful for testing template snippets:
+
+```
+Tool: template_render
+Arguments: {"template": "Hello {{ name }}!", "data": "{\"name\": \"Alice\"}"}
+```
+
+### Files
+
+| Tool | Description |
+|------|-------------|
+| `file_read` | Read a project file (relative to project root) |
+| `file_write` | Write or update a project file (full overwrite) |
+| `file_patch` | Targeted edit -- replace `old_string` with `new_string` in a file |
+| `file_list` | List files in a directory |
+| `asset_upload` | Upload a file to `src/public/` |
+
+File operations are sandboxed. Paths that escape the project directory are rejected. An AI assistant cannot read `/etc/passwd` or write outside your project.
+
+### Migrations
+
+| Tool | Description |
+|------|-------------|
+| `migration_status` | List pending and completed migrations |
+| `migration_create` | Create a new migration file |
+| `migration_run` | Run all pending migrations |
+
+### Data and ORM
+
+| Tool | Description |
+|------|-------------|
+| `orm_describe` | List all ORM models with fields, types, and relationships |
+| `seed_table` | Seed a table with fake data |
+
+### Infrastructure
+
+| Tool | Description |
+|------|-------------|
+| `queue_status` | Queue size by status (pending, completed, failed) |
+| `session_list` | Active sessions with data |
+| `cache_stats` | Response cache hit/miss statistics |
+
+### Debugging
+
+| Tool | Description |
+|------|-------------|
+| `log_tail` | Read recent log entries |
+| `error_log` | Recent errors and exceptions with stack traces |
+| `env_list` | Environment variables (sensitive values redacted) |
+| `system_info` | Framework version, Python version, project info |
+
+The `env_list` tool redacts any variable containing "secret", "password", "token", "key", or "credential" in its name.
+
+### Project introspection
+
+| Tool | Description |
+|------|-------------|
+| `git_status` | Show current branch, modified/untracked files, and recent commits |
+| `deps_list` | List the project's declared Python dependencies (from `pyproject.toml`) |
+| `project_overview` | One-shot snapshot: dependencies, routes, models, tables, errors, git |
+
+### Persistent code index
+
+| Tool | Description |
+|------|-------------|
+| `index_rebuild` | Refresh the persistent project index (lazy, mtime-based) |
+| `index_search` | Find files by path, symbol, route, or summary -- use FIRST for "where is X" |
+| `index_file` | Full index entry for one file: symbols, routes, imports |
+| `index_overview` | Project shape: files by language, routes, models, recent edits |
+
+### Framework documentation (prose)
+
+| Tool | Description |
+|------|-------------|
+| `docs_list` | List framework documentation files |
+| `docs_search` | Search Tina4 framework docs for a query string -- use before guessing |
+| `docs_section` | Return a full markdown section from a framework doc file |
+
+### Live API RAG (reflection)
+
+`api_*` tools query the live framework reflection -- actual class/method signatures, file/line locations, with a `framework` vs `user` source tag. Use these for "what's the signature of X?" questions; `docs_*` is for "explain queues conceptually".
+
+| Tool | Description |
+|------|-------------|
+| `api_search` | Live API search -- finds framework + user classes/methods by name/summary |
+| `api_class` | Live class reflection -- returns full method list and signatures for an FQN |
+| `api_method` | Live method reflection -- returns signature, params, return type, file, line |
+
+### Plan management
+
+The `plan_*` family lets an AI assistant cooperate with a markdown plan file in `plan/`. Tina4 uses these to keep a steady record of in-progress refactors and multi-session work.
+
+| Tool | Description |
+|------|-------------|
+| `plan_current` | The active plan: title, steps (done/not), next step, progress |
+| `plan_list` | All plans in `plan/` with progress and which one is active |
+| `plan_create` | Create a new markdown plan and make it active |
+| `plan_switch_to` | Make a different plan the active one |
+| `plan_complete_step` | Tick a step as done (call the moment the step finishes) |
+| `plan_add_step` | Append a new unchecked step to the current plan |
+| `plan_note` | Append a timestamped note/breadcrumb to the current plan |
+| `plan_archive` | Move a finished plan to `plan/done/` and clear the current pointer |
+| `plan_read` | Full structured view of any plan by filename |
+| `plan_flesh` | Auto-generate concrete build steps via qwen and append them to a plan |
+
+---
+
+## 5. Protocol Details
+
+The MCP server speaks JSON-RPC 2.0 over the current Streamable HTTP transport (protocol versions `2025-06-18` and `2025-03-26`). It still answers the legacy `2024-11-05` HTTP+SSE transport so older clients keep working. The server negotiates: it echoes the version a client asks for when it can speak it, and otherwise falls back to the newest one.
+
+### Streamable HTTP (current)
+
+One endpoint carries the whole conversation:
+
+```
+POST /__dev/mcp
+Content-Type: application/json
+```
+
+`initialize` mints a session and returns it in a header:
+
+```
+Mcp-Session-Id: 0f9a...c31
+```
+
+Send that header on every later request. A request bearing an unknown session gets a `404`, the client's cue to initialize again. A notification (a message with no `id`) returns `202` with an empty body. Every other request answers inline with the JSON-RPC response as `application/json`. `GET /__dev/mcp` returns `405` with an `Allow: POST, DELETE` header; `DELETE /__dev/mcp` ends the session.
+
+### Legacy HTTP+SSE (still supported)
+
+```
+GET /__dev/mcp/sse
+Content-Type: text/event-stream
+```
+
+Returns the message endpoint URL as a server-sent event:
+
+```
+event: endpoint
+data: http://localhost:7146/__dev/mcp/message
+```
+
+Then POST JSON-RPC messages to that endpoint:
+
+```
+POST /__dev/mcp/message
+Content-Type: application/json
+```
+
+### Messages
+
+Both transports carry the same JSON-RPC 2.0 requests:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/list",
+  "params": {}
+}
+```
+
+Returns JSON-RPC 2.0 responses:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {"name": "database_query", "description": "Execute a read-only SQL query", "inputSchema": {...}}
+    ]
+  }
+}
+```
+
+### Lifecycle
+
+1. Client sends `initialize` -- server responds with capabilities
+2. Client sends `notifications/initialized` -- server acknowledges
+3. Client calls `tools/list` -- server returns all registered tools with schemas
+4. Client calls `tools/call` with tool name and arguments -- server executes and returns results
+5. Client calls `resources/list` and `resources/read` for data resources
+
+---
+
+## 6. Troubleshooting
+
+**MCP server not starting:**
+- Check `TINA4_DEBUG=true` in `.env`
+- Verify the server is running on localhost (not a remote host)
+
+**Claude Code not detecting the server:**
+- Restart Claude Code after starting the Tina4 server
+- Check `.claude/settings.json` exists with the correct URL
+- Verify the port matches your server's port
+
+**Tools returning errors:**
+- Database tools require `bind_database(db)` in `app.py`
+- File tools are sandboxed to the project directory
+- `database_execute` only works on localhost
+
+**Remote server, MCP disabled:**
+- This is intentional. Set `TINA4_MCP_REMOTE=true` only on staging environments you trust
+- Never enable MCP on production servers

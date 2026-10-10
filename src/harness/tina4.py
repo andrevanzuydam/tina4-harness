@@ -264,12 +264,18 @@ def stop() -> str:
     return "stopped"
 
 
-# --- paradigm grounding over the downloaded framework docs (optional, best-effort) ---------------
+# --- paradigm grounding over the framework docs -------------------------------------------------
+# Docs are bundled with the harness (data/tina4-docs/<python|js>/) so grounding works FULLY OFFLINE —
+# no network, no `tina4 docs`. A project-local .tina4-docs is used too when present, and only if
+# nothing is on disk at all do we fall back to downloading.
+from .download import PROJECT_ROOT  # noqa: E402
+
+_BUNDLED_DOCS = PROJECT_ROOT / "data" / "tina4-docs"
 _docs_index = None
 
 
 def ensure_docs(cwd: str | Path) -> Path | None:
-    """Download Tina4 docs into .tina4-docs/ (once) so answers can be grounded in them."""
+    """Download Tina4 docs into .tina4-docs/ (online, last resort) so answers can be grounded."""
     d = Path(cwd) / ".tina4-docs"
     if d.is_dir() and any(d.rglob("*.md")):
         return d
@@ -280,28 +286,53 @@ def ensure_docs(cwd: str | Path) -> Path | None:
     return d if d.is_dir() else None
 
 
+def _doc_dirs(cwd: str | Path) -> list[tuple[str, Path]]:
+    """(label, dir) of *.md doc sets to ground on, offline-first: the bundled python+js docs shipped
+    with the harness, plus a project-local .tina4-docs if present. Only when NOTHING is on disk do we
+    try a network download."""
+    dirs: list[tuple[str, Path]] = []
+    if _BUNDLED_DOCS.is_dir():
+        for sub in sorted(_BUNDLED_DOCS.iterdir()):
+            if sub.is_dir() and any(sub.glob("*.md")):
+                dirs.append((sub.name, sub))
+    local = Path(cwd) / ".tina4-docs"
+    if local.is_dir() and any(local.rglob("*.md")):
+        dirs.append(("project", local))
+    if not dirs:
+        d = ensure_docs(cwd)  # last resort: download (needs network)
+        if d is not None:
+            dirs.append(("project", d))
+    return dirs
+
+
 def ask_tina4(question: str, cwd: str | Path | None = None, k: int = 4) -> str:
-    """Retrieve the most relevant Tina4 documentation chunks for a question (grounding text)."""
+    """Retrieve the most relevant Tina4 documentation chunks for a question (grounding text). Indexes
+    the bundled python + js docs (and any project-local docs), tagging each chunk with its source so
+    the model can tell tina4-python from tina4-js. Works offline."""
     global _docs_index
     base = Path(cwd or Path.cwd())
-    docs = ensure_docs(base)
-    if docs is None:
-        return ""
     if _docs_index is None:
+        dirs = _doc_dirs(base)
+        if not dirs:
+            return ""
         try:
             from groundwire import Groundwire
 
             gw = Groundwire(memory="bm25", k=k, max_words=120)
-            for f in docs.rglob("*.md"):
-                try:
-                    gw.ingest_code(f.read_text(encoding="utf-8", errors="ignore"), title=f.name)
-                except Exception:
-                    continue
+            for label, d in dirs:
+                for f in sorted(d.rglob("*.md")):
+                    try:
+                        gw.ingest_code(f.read_text(encoding="utf-8", errors="ignore"),
+                                       title=f"{label}/{f.name}")
+                    except Exception:
+                        continue
             _docs_index = gw
         except Exception:
             return ""
     try:
         hits = _docs_index.retrieve(question, k=k)
+        # Each chunk already carries a "# file: <label>/<name>" header from ingest, so the model can
+        # see whether it's python or js docs.
         return "\n\n".join(text[:600] for _cid, text, _s in hits)
     except Exception:
         return ""

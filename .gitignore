@@ -2,7 +2,8 @@
 __pycache__/
 *.pyc
 *.pyo
-data/
+data/*
+!data/tina4-docs/
 logs/
 secrets/
 .env
@@ -35,3 +36,4 @@ notebooks/tina4app/
 notebooks/*-app/
 notebooks/shop/
 notebooks/Python/
+.tina4-docs/

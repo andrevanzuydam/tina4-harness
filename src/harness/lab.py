@@ -831,7 +831,7 @@ def _new_tina4_app(text: str) -> str:
     port = tina4.free_port(7146)
     _status(f"🚀 starting tina4 serve on :{port}…")
     url = tina4.serve(dest, port=port)
-    note = (f"Provisioned and started **{name}** at {url} — opening the preview. "
+    note = (f"🤖 Provisioned and started **{name}** at {url} — opening the preview. "
             f"It's a standard Tina4 app in `{name}/` (routes in `src/routes/`). "
             "Ask me to add routes/pages and they'll land in the project.")
     return f"{_APP_SENTINEL}|{url}\n{note}"
@@ -947,7 +947,7 @@ def _tina4_write(project, text: str, messages: list) -> str:
         )
     written.insert(0, tina4.add_route(project, name, route))
     files = ", ".join(f"`{w}`" for w in written)
-    note = (f"Wrote {files} in **{project.name}** — route `{url}`. "
+    note = (f"🤖 Wrote {files} in **{project.name}** — route `{url}`. "
             "tina4's hot-reload picks it up and the App Preview auto-refreshes.")
     return f"{_WROTE_SENTINEL}|{project}|{url}\n{note}\n\n```python\n{route.strip()}\n```"
 
@@ -1409,16 +1409,29 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         "involves the current time/date; prefer computing it in code (e.g. datetime.now()) over "
         "hardcoding a literal."
     )
-    # Working inside a Tina4 project? Ground the model in Tina4 paradigms automatically — no toggle.
+    # Working inside a Tina4 project? Ground in Tina4 paradigms (always) and LEAN ON the docs only
+    # when the request actually needs guidance — not on every coding task, so documentation prose
+    # never gets mistaken for code to write or edit. The 🤖 marker signals "Tina4 mode" in the chat.
+    mark = "🤖 " if tina4_project is not None else ""
     if tina4_project is not None:
         try:
             from . import tina4
 
             _status(f"🟢 Tina4 project: {tina4_project.name}")
             system_text += "\n\n" + tina4.PARADIGMS
-            docs = tina4.ask_tina4(last_user, cwd=tina4_project)
-            if docs:
-                system_text += "\n\nRelevant Tina4 documentation:\n" + docs[:1500]
+            # Pull doc chunks only for how-to / concept questions, not plain code requests.
+            needs_docs = intent == "ask" or bool(re.search(
+                r"\b(how|what|why|which|when|where|explain|guide|docs?|documentation|example|usage|"
+                r"supported|set ?up|configure|integrat|authenticat|websocket|session|queue|orm|"
+                r"migrat|template|signal|component|deploy|graphql|sse|realtime)\b",
+                last_user, re.I))
+            if needs_docs:
+                docs = tina4.ask_tina4(last_user, cwd=tina4_project)
+                if docs:
+                    system_text += (
+                        "\n\nReference Tina4 documentation — for GUIDANCE ONLY. It explains how the "
+                        "framework works; do NOT paste it verbatim, and do NOT treat it as the user's "
+                        "code to edit. Write fresh code that follows it:\n" + docs[:1500])
         except Exception:
             pass
     help_run: dict = {}
@@ -1652,7 +1665,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         if choices:
             import json as _json
             return _CHOICES_SENTINEL + _json.dumps(choices)
-        return _cap_prose(reply, 1200)  # an explanation to read in the chat — nothing inserted
+        return mark + _cap_prose(reply, 1200)  # an explanation to read in the chat — nothing inserted
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).
     m = _FENCE.search(tidied)
@@ -1678,7 +1691,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     is_revision = bool(re.search(r"\b(fix|edit|updat|chang|refactor|improv|rewrit|modif)\w*", last_user, re.I))
     if notebook_code and not is_revision:
         tidied = _strip_redefs_in_reply(tidied, _defined_names(notebook_code))
-    return tidied
+    return mark + tidied
 
 
 def _looks_like_question(text: str) -> bool:
