@@ -30,6 +30,6 @@ than pasting broken code or inventing an API. (User's stated principles.)
 
 ## Commits
 - 9f0b781  ground import/attribute errors against the real module
-- 1b4a7be  self-check generated code by running it + honest deferral + ask-when-unsure
+- 325471c  self-check generated code by running it + honest deferral + ask-when-unsure
 
 ## Status: Complete (living — tighten as testing surfaces gaps)
