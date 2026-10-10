@@ -218,6 +218,9 @@ _CHAT_SYSTEM = (
     "Python module (`import antigravity`), not anything else. Code you write is inserted and run as a "
     "NEW NOTEBOOK CELL automatically.\n\n"
     "RULES:\n"
+    "- BE CONCISE — do not bombard the user with reading. Lead with the key point, keep it short, "
+    "prefer a few bullets over long paragraphs, and invite the user to ask for more rather than "
+    "dumping everything at once. A short answer they can act on beats a wall of text.\n"
     "- Reply with AT MOST ONE ```python code block plus one short sentence of prose. ALWAYS write the "
     "real, complete, runnable code — NEVER a placeholder like '[your code here]' or '[complete solution]'.\n"
     "- For a build/create/write-code request, go STRAIGHT to the code block. Do NOT write a plan, an "
@@ -234,13 +237,21 @@ _CHAT_SYSTEM = (
 
 
 def _cap_prose(text: str, limit: int = 700) -> str:
-    """Trim a long prose answer at a sentence/line boundary so the chat doesn't overflow."""
+    """Trim a long prose answer at a sentence/line boundary — WITHOUT breaking Markdown. Never cuts
+    inside a fenced code block (that would leave an unclosed ``` and render the whole reply as raw
+    text), and closes any dangling fence."""
     text = text.strip()
-    if len(text) <= limit:
-        return text
-    cut = text[:limit]
-    dot = max(cut.rfind(". "), cut.rfind("\n"))
-    return (cut[: dot + 1] if dot > limit // 2 else cut).rstrip() + " …"
+    if len(text) > limit:
+        cut = text[:limit]
+        # If the cut lands inside a code fence, back up to before that fence opened.
+        if cut.count("```") % 2 == 1:
+            cut = cut[: cut.rfind("```")].rstrip()
+        dot = max(cut.rfind(". "), cut.rfind("\n"))
+        text = (cut[: dot + 1] if dot > limit // 2 else cut).rstrip() + "\n\n…"
+    # Always leave Markdown valid — close a fence the model left open (else the chat renders raw).
+    if text.count("```") % 2 == 1:
+        text += "\n```"
+    return text
 
 
 _PLACEHOLDER = re.compile(
@@ -1409,29 +1420,45 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         "involves the current time/date; prefer computing it in code (e.g. datetime.now()) over "
         "hardcoding a literal."
     )
-    # Working inside a Tina4 project? Ground in Tina4 paradigms (always) and LEAN ON the docs only
-    # when the request actually needs guidance — not on every coding task, so documentation prose
-    # never gets mistaken for code to write or edit. The 🤖 marker signals "Tina4 mode" in the chat.
-    mark = "🤖 " if tina4_project is not None else ""
-    if tina4_project is not None:
+    # Ground in Tina4 when we're in a Tina4 project OR the question is explicitly ABOUT tina4 (so
+    # "tell me about tina4" is answered from the bundled docs, not the 2B's guesswork). LEAN ON the
+    # docs only when the request needs guidance — not on every coding task — so documentation prose
+    # never gets mistaken for code to write. The 🤖 marker signals "Tina4 mode" in the chat.
+    asks_tina4 = bool(re.search(r"\btina4\b", last_user, re.I))
+    mark = "🤖 " if (tina4_project is not None or asks_tina4) else ""
+    if tina4_project is not None or asks_tina4:
         try:
+            from pathlib import Path as _Path
+
             from . import tina4
 
-            _status(f"🟢 Tina4 project: {tina4_project.name}")
+            if tina4_project is not None:
+                _status(f"🟢 Tina4 project: {tina4_project.name}")
+            else:
+                _status("🟢 Tina4 — grounding in the docs…")
             system_text += "\n\n" + tina4.PARADIGMS
-            # Pull doc chunks only for how-to / concept questions, not plain code requests.
-            needs_docs = intent == "ask" or bool(re.search(
+            # Pull doc chunks for a tina4 question, a how-to/concept question, or any ask.
+            needs_docs = intent == "ask" or asks_tina4 or bool(re.search(
                 r"\b(how|what|why|which|when|where|explain|guide|docs?|documentation|example|usage|"
                 r"supported|set ?up|configure|integrat|authenticat|websocket|session|queue|orm|"
                 r"migrat|template|signal|component|deploy|graphql|sse|realtime)\b",
                 last_user, re.I))
             if needs_docs:
-                docs = tina4.ask_tina4(last_user, cwd=tina4_project)
+                # A broad "tell me about tina4" is a weak retrieval query (tina4 is in every chunk) —
+                # expand it so BM25 surfaces the getting-started intro, not a random code snippet.
+                docs_q = last_user
+                if asks_tina4 and re.search(r"\b(tell me about|what is|overview|about)\b", last_user, re.I):
+                    docs_q = last_user + " getting started what is zero-dependency overview key features"
+                docs = tina4.ask_tina4(docs_q, cwd=tina4_project or _Path.cwd())
                 if docs:
                     system_text += (
-                        "\n\nReference Tina4 documentation — for GUIDANCE ONLY. It explains how the "
-                        "framework works; do NOT paste it verbatim, and do NOT treat it as the user's "
-                        "code to edit. Write fresh code that follows it:\n" + docs[:1500])
+                        "\n\nReference Tina4 documentation — the source of truth. Answer ONLY from it; "
+                        "do NOT use outside knowledge and do NOT invent details. Tina4 is a "
+                        "ZERO-DEPENDENCY framework (Python / PHP / Ruby / Node.js, plus a tiny reactive "
+                        "frontend, tina4-js) — it is NOT built on Express, Fastify, Redux, Vue or any "
+                        "third-party library; routing, ORM, templates (Frond), auth, queues and "
+                        "WebSocket are all built in. Do NOT paste the docs verbatim or treat them as "
+                        "code to edit; write fresh code that follows them:\n" + docs[:1500])
         except Exception:
             pass
     help_run: dict = {}
@@ -1473,10 +1500,23 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             if help_run.get("ran") and help_run.get("skipped") is None:
                 system_text += "\n\nFor reference, running this cell just now: " + _run_summary(help_run)
         else:
-            system_text += (
-                "\n\nThis is a QUESTION, not a build request. EXPLAIN clearly in a few sentences; show "
-                "at most a tiny corrected snippet inline. Do NOT output a full program or a cell to run."
-            )
+            overview = bool(re.search(
+                r"\b(tell me about|overview|what(?:'s| is| are)|give me a rundown|rundown|summar\w*|"
+                r"introduc\w*|explain .{0,20}\b(framework|library|project|tina4))\b", last_user, re.I))
+            if overview:
+                system_text += (
+                    "\n\nThis is an OVERVIEW question. Answer like a person would on first being asked "
+                    "— a one-sentence plain intro, then 3 to 5 SHORT bullets of the main points, one "
+                    "line each. Do NOT dump the whole history or every feature; no walls of text, no "
+                    "code block. End with one line inviting the user to pick a point to go deeper on. "
+                    "Expand only when they ask."
+                )
+            else:
+                system_text += (
+                    "\n\nThis is a QUESTION, not a build request. EXPLAIN clearly and concisely; show "
+                    "at most a tiny corrected snippet inline. Do NOT output a full program or a cell "
+                    "to run. Prefer a few short bullets over a long paragraph."
+                )
     # "call / invoke / run the function" → just CALL an already-defined function, don't define a new one.
     if intent != "ask" and re.search(r"\b(call|invoke|run)\b", last_user, re.I):
         system_text += (
@@ -1622,7 +1662,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                         f"_❌ Your check fails: {'; '.join(base['lines'])}. I couldn't produce a change "
                         "that makes it pass — check the expected value, or tell me more._"
                     )
-                return (_FIX_SENTINEL if offer_fix else "") + _cap_prose(reply, 1200)
+                return (_FIX_SENTINEL if offer_fix else "") + _cap_prose(reply, 8000)
 
             verdict = _fix_verdict(context, cand) if cand else None
             # A fix is offered ONLY when running it proves it helps: it clears a real error, or it
@@ -1659,13 +1699,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 else:  # the model proposed no change at all
                     detail = "I didn't find a behaviour problem — if it should do something different, tell me"
                 reply = (reply + "\n\n" if reply else "") + f"_✅ Validated by running it: {ran} — {detail}._"
-            return (_FIX_SENTINEL if offer_fix else "") + _cap_prose(reply, 1200)
+            return (_FIX_SENTINEL if offer_fix else "") + _cap_prose(reply, 8000)
         # A clarifying question with a short option list → let the UI show clickable pills.
         choices = _as_choices(reply)
         if choices:
             import json as _json
             return _CHOICES_SENTINEL + _json.dumps(choices)
-        return mark + _cap_prose(reply, 1200)  # an explanation to read in the chat — nothing inserted
+        return mark + _cap_prose(reply, 8000)  # an explanation to read in the chat — nothing inserted
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).
     m = _FENCE.search(tidied)

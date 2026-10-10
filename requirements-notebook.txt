@@ -7,6 +7,8 @@ ipykernel>=6
 nbconvert>=7
 huggingface_hub>=0.23
 tina4-groundwire>=0.1
+# Tina4 Python framework — importable in notebook cells so chat-generated tina4 examples run.
+tina4-python>=3.13
 
 # Apple Silicon (M-series) → MLX via mlx-vlm: ONE model does both text and images
 # (pulls in mlx-lm). Qwen3.8-2B-Distill is a vision-language model, so this is the whole MLX path.

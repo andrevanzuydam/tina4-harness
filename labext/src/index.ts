@@ -1260,7 +1260,7 @@ class ChatPanel extends Widget {
     // An explicit "in a cell" / "new cell" means they want a CELL — honour it even over a question.
     const wantsCell = /\b(in|into|as|to)\s+a?\s*(new\s+)?cell\b/i.test(text) || /\bnew cell\b/i.test(text);
     const hasError = /error|traceback/i.test(output);
-    const isQuestion = /\b(what|why|how|explain|mean)\b/i.test(text) || text.trim().endsWith('?');
+    const isQuestion = /\b(what|why|how|explain|mean|describe|tell me|overview|who|when|where|difference|compare|summar)\b/i.test(text) || text.trim().endsWith('?');
     // A bare "help" (no specific build topic) means: look at the cell they're on and explain it /
     // flag problems — never spawn a new cell. "help me write/draw/build X" has its own topic, so it
     // falls through to normal routing.
