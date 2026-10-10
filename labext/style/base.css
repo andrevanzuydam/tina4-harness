@@ -246,3 +246,59 @@
   font-size: var(--jp-ui-font-size0);
   color: var(--jp-success-color1);
 }
+
+/* --- Feed polish: calm streaming + gentle motion ------------------------------------------- */
+@keyframes harness-spin { to { transform: rotate(360deg); } }
+@keyframes harness-fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+/* Every message eases in — smooth even when replies land one after another on a slow machine. */
+.harness-msg {
+  animation: harness-fade 0.16s ease-out;
+}
+
+/* The in-progress "working" bubble: a spinner, the current status, and a calm streaming body. */
+.harness-working-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--jp-ui-font-color2);
+  font-size: var(--jp-ui-font-size0);
+}
+.harness-spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--jp-border-color1);
+  border-top-color: var(--jp-brand-color1);
+  border-radius: 50%;
+  animation: harness-spin 0.7s linear infinite;
+}
+.harness-status {
+  font-weight: 500;
+}
+.harness-stream {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--jp-ui-font-color1);
+  font-size: var(--jp-ui-font-size1);
+  line-height: 1.45;
+}
+.harness-stream:empty {
+  display: none;
+}
+
+/* Code blocks read as blocks, inline code as chips — consistent in light and dark. */
+.harness-msg pre {
+  background: var(--jp-layout-color0);
+  border: 1px solid var(--jp-border-color2);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  overflow-x: auto;
+}
+.harness-msg :not(pre) > code {
+  background: var(--jp-layout-color0);
+  border-radius: 4px;
+  padding: 0 4px;
+}

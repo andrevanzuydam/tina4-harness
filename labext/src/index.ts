@@ -1306,7 +1306,24 @@ class ChatPanel extends Widget {
     this._send.disabled = true;
     this._stop.style.display = '';
     this._busyPanel = panel;
-    const pending = await this._append('assistant', '…');
+    // A tidy "working" bubble: a spinner + the current status, and a calm streaming body below —
+    // instead of one bubble flipping between status text and a jittery raw-token tail (very visible
+    // on a slow machine). The status reads the phase; the body fills in as the answer streams.
+    const pending = document.createElement('div');
+    pending.className = 'harness-msg harness-assistant harness-working';
+    const head = document.createElement('div');
+    head.className = 'harness-working-head';
+    const spin = document.createElement('span');
+    spin.className = 'harness-spinner';
+    const label = document.createElement('span');
+    label.className = 'harness-status';
+    label.textContent = 'Thinking…';
+    head.append(spin, label);
+    const body = document.createElement('div');
+    body.className = 'harness-stream';
+    pending.append(head, body);
+    this._log.appendChild(pending);
+    this._log.scrollTop = this._log.scrollHeight;
     let streamed = '';
     try {
       const reply = await kernelEdit(
@@ -1323,15 +1340,29 @@ class ChatPanel extends Widget {
           think: this._thinkMode
         },
         (s: string) => {
-          pending.textContent = s;
+          if (s && s.trim()) {
+            label.textContent = s.trim();
+          }
         },
         (delta: string) => {
           streamed += delta;
-          const shown = streamed.includes('</think>')
+          // While the model is inside <think>…</think>, keep the status reading "thinking" and show
+          // nothing raw; once the answer starts, stream it calmly into the body.
+          const thinking = streamed.includes('<think>') && !streamed.includes('</think>');
+          if (thinking) {
+            if (!/thinking/i.test(label.textContent || '')) {
+              label.textContent = '💭 thinking…';
+            }
+            return;
+          }
+          const answer = streamed.includes('</think>')
             ? (streamed.split('</think>').pop() as string)
             : streamed.replace('<think>', '');
-          pending.textContent = shown.trim().slice(-1400);
-          this._log.scrollTop = this._log.scrollHeight;
+          const shown = answer.trim();
+          if (shown) {
+            body.textContent = shown.length > 2000 ? '…' + shown.slice(-2000) : shown;
+            this._log.scrollTop = this._log.scrollHeight;
+          }
         }
       );
       this._messages.push({ role: 'assistant', content: reply });
