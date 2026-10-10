@@ -899,7 +899,8 @@ class ChatPanel extends Widget {
     panel: NotebookPanel,
     code: string,
     sel: { cell: Cell; from: number; to: number } | null,
-    isRevision: boolean
+    isRevision: boolean,
+    noRun = false
   ): Promise<void> {
     // A fix/edit that redefines an existing cell's names edits THAT cell in place (no duplicate).
     const target = isRevision ? findRevisionTarget(panel, code) : null;
@@ -917,10 +918,14 @@ class ChatPanel extends Widget {
       mode = r.created ? 'created' : 'filled';
     }
     // Don't auto-run code that would block on input() AT TOP LEVEL (module scope). input() inside a
-    // function body is fine — running the cell just defines the function, so we DO run it.
+    // function body is fine — running the cell just defines the function, so we DO run it. Also don't
+    // auto-run code the kernel couldn't validate (noRun: a network call, a file write, …) — it's
+    // inserted, ready for the user to run deliberately.
     const readsInput = code.split('\n').some(l => /\binput\s*\(/.test(l) && !/^\s/.test(l) && !l.trimStart().startsWith('#'));
-    if (!readsInput) {
+    if (!readsInput && !noRun) {
       await runCell(panel, cell);
+    } else if (noRun) {
+      await this._append('assistant', "📝 Inserted — I didn't run it because I couldn't check it safely first (it makes a network/file call or needs input). Review it and run when ready.");
     }
 
     let on = true;
@@ -1543,8 +1548,13 @@ class ChatPanel extends Widget {
     // flag problems — never spawn a new cell. "help me write/draw/build X" has its own topic, so it
     // falls through to normal routing.
     const isHelp = /^\s*(?:please\s+|pls\s+|plz\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?h[ae]lp\b/i.test(text);
-    const helpHasTopic = /\bhelp\b[^.?!]*\b(write|writing|create|creating|build|building|make|making|generat|add|draw|drawing|implement|example|function|script|program|app)\b/i.test(text)
-      && !/\b(this|that|here|above|below|current|selected|my code|the cell|this cell)\b/i.test(text);
+    // "help me with X" has a real build TOPIC — either a build verb, or a concrete coding thing to
+    // make (a REST request, an API client, a parser, …). Only a bare "help" / "help with this" (no
+    // topic, or pointing at the current cell) is cell-focused chat.
+    const helpHasTopic = (
+      /\bhelp\b[^.?!]*\b(write|writing|create|creating|build|building|make|making|generat|add|draw|drawing|implement|example|function|script|program|app)\b/i.test(text)
+      || /\bhelp\b[^.?!]*\b(rest|api|endpoint|route|request|graphql|client|server|fetch|download|upload|parser?|regex|query|websocket|socket|json|csv|database|sql|dataframe|algorithm|snippet|scraper|crawler|cli|command|decorator|generator|class|method|loop|sort|search|connect\w*)\b/i.test(text)
+    ) && !/\b(this|that|here|above|below|current|selected|my code|the cell|this cell)\b/i.test(text);
     const bareHelp = isHelp && !helpHasTopic;
     // A QUESTION explains (no cell); a FIX edits in place; anything else is a request for CODE, so
     // write it into a cell (a bare 'christmas tree' should produce a cell, not a chat-only answer).
@@ -1627,6 +1637,7 @@ class ChatPanel extends Widget {
     this._log.appendChild(pending);
     this._log.scrollTop = this._log.scrollHeight;
     let streamed = '';
+    let noRun = false;  // set when the kernel says this code wasn't validated → insert but don't run
     // Render the live stream AS MARKDOWN (throttled) instead of raw text, so it reads like the final
     // message — not raw `**bold**` / `### heading` / fenced source. Throughput is ample; we just cap
     // the re-render rate so it stays calm.
@@ -1713,6 +1724,12 @@ class ChatPanel extends Widget {
           mode = 'create';
         }
         reply = reply.slice('@@HARNESS_CODE@@\n'.length);
+      }
+      // The kernel couldn't safely validate this code (it makes a network call, writes a file, …), so
+      // it must be INSERTED but NOT auto-run — we never auto-run code we didn't check.
+      if (reply.startsWith('@@HARNESS_NORUN@@\n')) {
+        noRun = true;
+        reply = reply.slice('@@HARNESS_NORUN@@\n'.length);
       }
       this._messages.push({ role: 'assistant', content: reply });
       pending.remove();
@@ -1850,7 +1867,7 @@ class ChatPanel extends Widget {
           if (mode === 'fix' && nb) {
             await this._applyFix(nb, code, sel, targetCell);   // edit in place — never append
           } else if (nb) {
-            await this._offerCode(nb, code, sel, false);
+            await this._offerCode(nb, code, sel, false, noRun);
           }
         }
         if (!mp && !blocks.length) {

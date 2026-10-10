@@ -418,6 +418,18 @@ def _is_placeholder(code: str) -> bool:
     return False
 
 
+def _is_prose_placeholder(text: str) -> bool:
+    """A PROSE reply that is a TEMPLATE of an answer rather than an answer — every content line is a
+    bracketed meta-instruction, e.g. "[Analyze the situation…]" / "[Clear, concise final answer]".
+    Distinct from `_is_placeholder` (code stubs): a real explanation that merely CONTAINS a bracket
+    like `[Name]` is NOT a placeholder, so this checks the whole reply, not an incidental match."""
+    s = text.strip()
+    if not s:
+        return True
+    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
+    return bool(lines) and all(ln.startswith("[") and ln.endswith("]") for ln in lines)
+
+
 def _strip_script_scaffold(code: str) -> str:
     """Make generated code safe to drop in a cell WITHOUT losing examples. Only remove the
     `if __name__ == "__main__":` block when it would actually hang the cell (it reads input());
@@ -798,6 +810,7 @@ _FIX_SENTINEL = "@@HARNESS_FIX@@\n"    # tells the extension: offer to APPLY the
 # extension's own guess: ASK = show the answer, do NOT insert a cell; CODE = insert/run as a cell.
 _MODE_ASK = "@@HARNESS_ASK@@\n"
 _MODE_CODE = "@@HARNESS_CODE@@\n"
+_NORUN = "@@HARNESS_NORUN@@\n"  # code mode, but DON'T auto-run it — we couldn't safely validate it
 _CHOICES_SENTINEL = "@@HARNESS_CHOICES@@"  # extension: render the options as clickable pills
 
 
@@ -2166,14 +2179,14 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         # ("[Analyze the situation, consider multiple hypotheses…]") instead of answering. Don't show
         # that — retry once, firmly, for a direct answer; if it still stalls, ask the user to be
         # specific rather than printing a placeholder.
-        if _is_placeholder(reply) and not _stopped:
+        if _is_prose_placeholder(reply) and not _stopped:
             _status("↻ answering directly…")
             firm = system_text + ("\n\nAnswer the user's question DIRECTLY in plain prose. Do NOT "
                 "describe what a good answer would contain, do NOT output a template or bracketed "
                 "placeholder, do NOT use square brackets around meta-instructions — just answer.")
             reply2 = _strip_think(_generate([{"role": "system", "content": firm}] + recent, gen_cap,
                                             enable_thinking=False))
-            if reply2.strip() and not _is_placeholder(reply2):
+            if reply2.strip() and not _is_prose_placeholder(reply2):
                 reply = reply2
             else:
                 reply = ("I need a bit more to go on — tell me what you'd like (e.g. a specific "
@@ -2217,10 +2230,15 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     # with the real error and ask the user, instead of auto-inserting broken code. (The user is
     # working WITH the harness toward a solution.) Edits/fixes are skipped (they lean on prior cells
     # and are validated separately); risky side-effecting code is skipped rather than run silently.
+    norun = False
     if intent == "code" and not is_revision and not _stopped:
         mv = _FENCE.search(tidied)
         code0 = mv.group(1) if mv else ""
-        if code0 and _valid_python(code0)[0] and _safe_to_run(code0):
+        if code0 and _valid_python(code0)[0] and not _safe_to_run(code0):
+            # Can't validate it by running (it makes a network call, writes a file, reads stdin, …).
+            # Honour "check before run": insert it, but DON'T auto-run code we never checked.
+            norun = True
+        elif code0 and _valid_python(code0)[0] and _safe_to_run(code0):
             run = _run_in_kernel(code0)
             err = run.get("error") if not run.get("skipped") else None
             best, attempts = tidied, 0
@@ -2290,7 +2308,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                     if built:
                         test_only = built
                 tidied = f"```python\n{fn_code}\n```\n\n```python\n{test_only}\n```"
-    return _MODE_CODE + _with_marker(mark, tidied)
+    return _MODE_CODE + (_NORUN if norun else "") + _with_marker(mark, tidied)
 
 
 def _looks_like_question(text: str) -> bool:

@@ -61,7 +61,7 @@ def _clean_indexes():
 
 def _clean(out):
     out = re.sub(r"__H(STATUS|STREAM)__\S*", "", out)
-    return re.sub(r"^@@HARNESS_(ASK|CODE)@@\n", "", out)  # the kernel's render-mode signal
+    return re.sub(r"^@@HARNESS_(ASK|CODE|NORUN)@@\n", "", out)  # the kernel's render-mode signal
 
 
 def chat(msg, **kw):

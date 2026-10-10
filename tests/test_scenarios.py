@@ -42,7 +42,7 @@ def chat(msg, intent="code", context="", output=""):
             else "ask" if raw.startswith("@@HARNESS_ASK@@")
             else "fix" if raw.startswith("@@HARNESS_FIX@@")
             else "other")
-    out = re.sub(r"__H(STATUS|STREAM)__\S*|@@HARNESS_(ASK|CODE|FIX|CHOICES)@@\S*\n?", "", raw)
+    out = re.sub(r"__H(STATUS|STREAM)__\S*|@@HARNESS_(ASK|CODE|FIX|CHOICES|NORUN)@@\S*\n?", "", raw)
     return mode, out
 
 
