@@ -2239,7 +2239,16 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             # Honour "check before run": insert it, but DON'T auto-run code we never checked.
             norun = True
         elif code0 and _valid_python(code0)[0] and _safe_to_run(code0):
-            run = _run_in_kernel(code0)
+            # Run the check WITH the notebook's own definitions in scope (imports/defs/classes only, so
+            # we don't re-run side-effecting top-level code), so generated code that CALLS a function
+            # defined in another cell — e.g. "test my add_numbers function" — resolves it instead of
+            # a false NameError when that cell hasn't been run yet.
+            try:
+                nb_defs = _defs_only(notebook_code).strip() if notebook_code else ""
+            except Exception:
+                nb_defs = ""
+            _check = lambda c: _run_in_kernel((nb_defs + "\n" + c) if nb_defs else c)  # noqa: E731
+            run = _check(code0)
             err = run.get("error") if not run.get("skipped") else None
             best, attempts = tidied, 0
             while err and attempts < 2 and not _stopped:
@@ -2260,7 +2269,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 if not mr or _is_placeholder(mr.group(1)) or not _valid_python(mr.group(1))[0]:
                     continue
                 best = rt
-                r2 = _run_in_kernel(mr.group(1))
+                r2 = _check(mr.group(1))
                 if not (r2.get("error") and not r2.get("skipped")):
                     tidied, err = rt, None   # verified: runs clean
                     break
