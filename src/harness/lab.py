@@ -455,6 +455,26 @@ def _is_prose_placeholder(text: str) -> bool:
     return bool(lines) and all(ln.startswith("[") and ln.endswith("]") for ln in lines)
 
 
+def _is_noop_code(code: str) -> bool:
+    """The 'code' does NOTHING runnable — only a module docstring / comments / `pass` (a DESCRIPTION
+    of what it would do, not actual code). This is what let "demo the classes" paste a cell that was
+    just a docstring. Returns False for any real statement (call, assignment, def, class, import)."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except Exception:
+        return False
+    for node in tree.body:
+        if isinstance(node, ast.Pass):
+            continue
+        if (isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant)
+                and isinstance(node.value.value, str)):
+            continue  # a bare string literal (docstring)
+        return False  # a real statement exists
+    return True  # nothing but docstrings/comments/pass
+
+
 def _strip_script_scaffold(code: str) -> str:
     """Make generated code safe to drop in a cell WITHOUT losing examples. Only remove the
     `if __name__ == "__main__":` block when it would actually hang the cell (it reads input());
@@ -606,10 +626,25 @@ def _recent_file_hint(messages: list) -> str:
 
 
 def _functions_in(code: str) -> list[tuple[str, list[str]]]:
+    """TOP-LEVEL functions only (name, params) — a method INSIDE a class is not a standalone function,
+    so "use/demo X" must not try to call `bark()` directly (it belongs to an instance)."""
+    import ast
+
+    try:
+        tree = ast.parse(code or "")
+    except Exception:
+        # Fallback for unparseable code: regex, but only NON-indented (module-level) defs.
+        out = []
+        for m in re.finditer(r"^(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)[ \t]*\(([^)]*)\)", code or "", re.M):
+            params = [p.strip() for p in m.group(2).split(",") if p.strip() and p.strip() != "self"]
+            out.append((m.group(1), params))
+        return out
     out = []
-    for m in re.finditer(r"^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)[ \t]*\(([^)]*)\)", code or "", re.M):
-        params = [p.strip() for p in m.group(2).split(",") if p.strip() and p.strip() != "self"]
-        out.append((m.group(1), params))
+    for node in tree.body:  # module body only — ClassDef methods are skipped
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            params = [a.arg for a in (list(getattr(node.args, "posonlyargs", [])) + node.args.args)
+                      if a.arg != "self"]
+            out.append((node.name, params))
     return out
 
 
@@ -2356,14 +2391,21 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             _check = lambda c: _run_in_kernel((nb_defs + "\n" + c) if nb_defs else c)  # noqa: E731
             run = _check(code0)
             err = run.get("error") if not run.get("skipped") else None
+            # A cell that is ONLY a docstring/comments runs clean but DOES nothing — treat it as a
+            # failure so the retry writes real code ("demo the classes" must instantiate + call them).
+            if not err and _is_noop_code(code0):
+                err = ("the code does NOTHING — it is only a docstring/comments. Write ACTUAL runnable "
+                       "code that does what was asked (e.g. instantiate the classes and CALL their "
+                       "methods, printing results)")
             best, attempts = tidied, 0
             while err and attempts < 2 and not _stopped:
                 attempts += 1
                 _status("↻ checking my code by running it…")
                 fixsys = system_text + (
-                    f"\n\nYou wrote code that FAILED when run:\n{err}\nReturn the COMPLETE corrected "
-                    "code as ONE ```python block that runs with NO error. Use ONLY real, existing "
-                    "names — do NOT invent imports, classes, methods or attributes."
+                    f"\n\nYour previous code was NOT acceptable: {err}\nReturn the COMPLETE code as ONE "
+                    "```python block that RUNS with no error AND actually does the task. Use ONLY real, "
+                    "existing names — do NOT invent imports, classes, methods or attributes, and do NOT "
+                    "write only a docstring or a description."
                     + _ground_import_error(err))
                 try:
                     rt = _tidy_chat(_strip_think(_generate(
@@ -2372,12 +2414,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 except Exception:
                     break
                 mr = _FENCE.search(rt)
-                if not mr or _is_placeholder(mr.group(1)) or not _valid_python(mr.group(1))[0]:
+                if (not mr or _is_placeholder(mr.group(1)) or not _valid_python(mr.group(1))[0]
+                        or _is_noop_code(mr.group(1))):
                     continue
                 best = rt
                 r2 = _check(mr.group(1))
                 if not (r2.get("error") and not r2.get("skipped")):
-                    tidied, err = rt, None   # verified: runs clean
+                    tidied, err = rt, None   # verified: runs clean and does something
                     break
                 err = r2.get("error")
             if err:
