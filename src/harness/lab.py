@@ -1881,11 +1881,12 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             _status("▶ running the cell…")
             help_run = _run_in_kernel(context)
             system_text += (
-                "\n\nThe user asked for help while this cell is selected. In plain language, explain "
-                "what the selected code does. If something looks wrong, give the COMPLETE corrected "
-                "cell as ONE ```python code block (the whole cell, ready to run as-is); if it looks "
-                "fine, output no code block. Use the selected code below directly — never ask the user "
-                "to paste or share it again."
+                "\n\nThe user asked for help while this cell is selected. Be BRIEF: in AT MOST 2 short "
+                "sentences, say what it does and (if anything) what's wrong — do NOT analyse it line "
+                "by line, do NOT use headings, tables, or section labels like 'How to Fix It', and do "
+                "NOT add closing remarks. If something is wrong, give the COMPLETE corrected cell as "
+                "ONE ```python code block (ready to run); if it looks fine, output no code block. Use "
+                "the selected code below directly — never ask the user to paste or share it again."
             )
             if assertion:
                 base0 = _assert_report(context, assertion)
@@ -2113,7 +2114,9 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     # also starves the small model's tendency to ramble into a repetition loop.
     gen_cap, gen_think = chat_cap, enable_thinking
     if intent == "ask" and not cell_help:
-        gen_cap, gen_think = min(chat_cap, 320), False
+        gen_cap, gen_think = min(chat_cap, 240), False   # a plain explanation: short, no reasoning
+    elif cell_help:
+        gen_think = False   # help: skip the reasoning phase so it stays terse (the fix code still fits)
     _status("💭 thinking…")
     reply = _strip_think(_generate([{"role": "system", "content": system_text}] + recent, gen_cap,
                                     stream=True, enable_thinking=gen_think))
@@ -2235,7 +2238,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             import json as _json
             return _CHOICES_SENTINEL + _json.dumps(choices)
         # Keep explanations short (the user can ask for more); code/help kept full above.
-        return _MODE_ASK + _with_marker(mark, _cap_prose(reply, 1100))
+        return _MODE_ASK + _with_marker(mark, _cap_prose(reply, 700))
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).
     m = _FENCE.search(tidied)
