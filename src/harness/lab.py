@@ -1472,6 +1472,64 @@ def _characterization_test(fn_code: str) -> str:
     return test
 
 
+def _pytest_from_expected(fn_code: str) -> str:
+    """Build a pytest test by asking the model ONLY for the value each sample call SHOULD return, then
+    asserting it. The 2B can't reliably write a whole pytest file (it reaches for fixtures/parametrize
+    that don't run when called directly), but it can name an expected value — so we keep the EXPECTED
+    value (a buggy function still fails) while guaranteeing a valid, runnable pytest test."""
+    import ast
+
+    try:
+        tree = ast.parse(fn_code)
+    except Exception:
+        return ""
+    fn = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and not n.name.startswith("_")), None)
+    if fn is None:
+        return ""
+    a = fn.args
+    if a.vararg or a.kwarg or a.kwonlyargs:
+        return ""
+    pos = list(getattr(a, "posonlyargs", [])) + list(a.args)
+    required = pos[: len(pos) - len(a.defaults)] if a.defaults else pos
+    primes = [2, 3, 5, 7]
+
+    def _mkargs(shift: int) -> str:
+        vals = []
+        for i, arg in enumerate(required):
+            ann = getattr(arg, "annotation", None)
+            t = ann.id if isinstance(ann, ast.Name) else None
+            vals.append(repr("abc"[: i + 1]) if t == "str" else str(primes[(i + shift) % 4]))
+        return ", ".join(vals)
+
+    calls = [f"{fn.name}({_mkargs(0)})", f"{fn.name}({_mkargs(2)})"]
+    asserts, uses_float = [], False
+    for call in calls:
+        q = ("Given the function below, what value SHOULD this call return (the CORRECT result for the "
+             f"function's purpose, judging by its NAME)?\nCall: {call}\nReply with ONLY the Python "
+             "value — e.g. 5 or 'hi' or 3.14 — nothing else.")
+        try:
+            raw = _strip_think(_generate(
+                [{"role": "system", "content": "Reply with ONLY a single Python literal value — no prose, no code fence."},
+                 {"role": "user", "content": "```python\n" + fn_code + "\n```\n\n" + q}],
+                40, enable_thinking=False, temperature=0.0)).strip()
+        except Exception:
+            return ""
+        m = re.search(r"-?\d+\.\d+|-?\d+|'[^']*'|\"[^\"]*\"|True|False|None", raw)
+        if not m:
+            return ""
+        expected = m.group(0)
+        if re.fullmatch(r"-?\d+\.\d+", expected):
+            uses_float = True
+            asserts.append(f"    assert {call} == pytest.approx({expected})")
+        else:
+            asserts.append(f"    assert {call} == {expected}")
+    head = "import pytest\n\n" if uses_float else ""
+    body = (head + f"def test_{fn.name}():\n" + "\n".join(asserts)
+            + f"\n\ntest_{fn.name}()\nprint('✓ test_{fn.name} passed')")
+    return body if _valid_python(body)[0] else ""
+
+
 def _valid_expr(src: str) -> bool:
     import ast
 
@@ -2329,23 +2387,34 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         m = _FENCE.search(tidied)
         if m:
             fn_code = _defs_only(m.group(1)).strip() or m.group(1).strip()
-            base_sys = _CHAT_SYSTEM + "\n\n" + _prompts.PYTEST_FOR_FN + fn_code + "\n```"
-            # Append a tiny runner so the pytest-style `def test_*` functions actually EXECUTE when the
-            # cell is run in the notebook (pytest isn't invoked here) and print a ✓ per test.
-            runner = ("\n\n# run the tests in the notebook\n"
+            # Show the model a COMPACT version (docstrings stripped) so it's less tempted to re-emit a
+            # long function and overflow the token budget — the full function is already in cell 1.
+            try:
+                import ast as _ast
+                fn_for_prompt = _ast.unparse(_strip_docstrings(_ast.parse(fn_code)))
+            except Exception:
+                fn_for_prompt = fn_code
+            base_sys = _CHAT_SYSTEM + "\n\n" + _prompts.PYTEST_FOR_FN + fn_for_prompt + "\n```"
+            # A tolerant runner so the pytest-style `def test_*` functions EXECUTE when the cell runs
+            # (pytest isn't invoked here): skip any that need fixtures/params, and report ✓/✗ per test
+            # without aborting the cell.
+            runner = ("\n\nimport inspect as _inspect\n"
                       "for _n, _f in list(globals().items()):\n"
-                      "    if _n.startswith('test_') and callable(_f):\n"
-                      "        _f()\n        print('✓', _n)")
-            test_only, err = "", ""
-            for attempt in range(2):
+                      "    if _n.startswith('test_') and callable(_f) and not _inspect.signature(_f).parameters:\n"
+                      "        try:\n"
+                      "            _f()\n            print('\u2713', _n)\n"
+                      "        except AssertionError as _e:\n            print('\u2717', _n, _e)")
+            test_only, err, last_cand = "", "", ""
+            for attempt in range(3):
                 sys_prompt = base_sys if attempt == 0 else base_sys + (
-                    f"\n\nYour previous test FAILED when run: {err}\nThe function is correct — FIX the "
-                    "EXPECTED values in the asserts (use pytest.approx for floats).")
+                    f"\n\nYour previous attempt was WRONG: {err}\nWrite SIMPLE `def test_x():` functions "
+                    "with plain `assert` lines — NO decorators, NO @pytest.mark, NO fixtures, NO params.")
                 try:
+                    # temperature 0 → follow the rigid template instead of wandering into fixtures.
                     tr = _tidy_chat(_strip_think(_generate(
                         [{"role": "system", "content": sys_prompt},
-                         {"role": "user", "content": "write the test"}], 320, enable_thinking=False)),
-                        as_tool=False)
+                         {"role": "user", "content": "write the test"}], 512, enable_thinking=False,
+                        temperature=0.0)), as_tool=False)
                 except Exception:
                     break
                 tm = _FENCE.search(tr)
@@ -2353,11 +2422,24 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 if not (cand and _valid_python(cand)[0]):
                     continue
                 cand = _drop_redefs(cand, _defined_names(fn_code)).strip() or cand
-                test_only = cand + runner
-                r = _run_in_kernel(fn_code + "\n" + test_only)
-                if not (r.get("error") and not r.get("skipped")):
-                    break  # the expected-value test passes
-                err = (r.get("error") or "").strip().splitlines()[-1][:160]
+                last_cand = cand
+                # The 2B loves fixtures/parametrize that don't run when called directly — reject and retry.
+                if re.search(r"@\s*pytest\.(fixture|mark)", cand):
+                    err = "used @pytest.fixture / @pytest.mark — not allowed"
+                    continue
+                if "pytest" in cand and not re.search(r"(?m)^\s*import pytest\b", cand):
+                    cand = "import pytest\n\n" + cand
+                r = _run_in_kernel(fn_code + "\n" + cand + runner)
+                if not (r.get("error") and not r.get("skipped")) and "\u2713" in (r.get("out") or ""):
+                    test_only = cand + runner  # at least one test ran green
+                    break
+                err = (r.get("error") or "no test executed").strip().splitlines()[-1][:160]
+            if not test_only:
+                # Robust fallback: the 2B can't be trusted to write a whole pytest file, but it CAN
+                # tell us the value a call SHOULD return. Ask for that (easy to parse) and BUILD a clean
+                # pytest test ourselves — valid every time, with the model-reasoned EXPECTED value (so a
+                # buggy function still FAILS the test — never characterization of the actual output).
+                test_only = _pytest_from_expected(fn_code)
             if test_only:
                 tidied = f"```python\n{fn_code}\n```\n\n```python\n{test_only}\n```"
     return _MODE_CODE + (_NORUN if norun else "") + _with_marker(mark, tidied)

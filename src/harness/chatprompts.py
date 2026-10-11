@@ -136,10 +136,15 @@ CALL = (
 
 # --- test generation: pytest-style, EXPECTED values (not characterization of actual behaviour) ---
 PYTEST_FOR_FN = (
-    "Write ONLY a test for the function below, pytest-style. Use one or more "
-    "`def test_<name>():` functions with `assert` checking the value the function SHOULD return — "
-    "COMPUTE the correct expected result YOURSELF, do NOT just restate what the code does. For "
-    "floating-point results use `pytest.approx(...)` and add `import pytest` at the top. Cover a "
-    "couple of cases. Do NOT redefine the function, no `if __name__` block, no runner, no prose. "
-    "ONE ```python block:\n```python\n"
+    "Write ONLY a test for the function below, pytest-style, as SIMPLE plain functions. Rules, follow "
+    "EXACTLY:\n"
+    "- Start with `import pytest` (only if you use pytest.approx).\n"
+    "- Write 2-3 `def test_<name>():` functions that take NO arguments.\n"
+    "- Each body is just `assert <call> == <expected>` — compute the correct EXPECTED value yourself "
+    "(the value it SHOULD return), do NOT restate the code. Use `pytest.approx(...)` for floats.\n"
+    "- Do NOT use `@pytest.fixture`, `@pytest.mark`, `@pytest.mark.parametrize`, ANY decorator, test "
+    "parameters, docstrings, comments, f-string messages, or an `if __name__` block.\n"
+    "- Do NOT redefine the function, no runner, no prose.\n"
+    "Example shape:\n```python\ndef test_basic():\n    assert thing(2, 3) == 5\n```\n"
+    "Now the function to test:\n```python\n"
 )
