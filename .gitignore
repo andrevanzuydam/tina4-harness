@@ -37,3 +37,4 @@ notebooks/*-app/
 notebooks/shop/
 notebooks/Python/
 .tina4-docs/
+logs/

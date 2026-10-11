@@ -132,6 +132,8 @@ def _locked_generate(model, messages, max_tokens, on_text=None, enable_thinking=
 # flow can skip its retry instead of launching a second generation.
 _stopped = False
 
+from .interaction_log import log_interaction as _log_interaction  # noqa: E402  (logs all generations)
+
 
 def _generate(messages, max_tokens=700, stream: bool = False, enable_thinking: bool = True,
               temperature=None) -> str:
@@ -145,10 +147,13 @@ def _generate(messages, max_tokens=700, stream: bool = False, enable_thinking: b
     _stopped = False
     model = get_model()
     on_text = _stream if stream else None
+    import time as _time
+
+    t0 = _time.time()
     fut = _executor().submit(_locked_generate, model, messages, max_tokens, on_text,
                              enable_thinking, temperature)
     try:
-        return fut.result()
+        out = fut.result()
     except KeyboardInterrupt:
         _stopped = True
         try:
@@ -156,9 +161,16 @@ def _generate(messages, max_tokens=700, stream: bool = False, enable_thinking: b
         except Exception:
             pass
         try:
-            return fut.result()  # completes quickly now, with whatever was generated
+            out = fut.result()  # completes quickly now, with whatever was generated
         except Exception:
-            return ""
+            out = ""
+    stats = getattr(model, "last_stats", None)
+    _log_interaction("generate", messages, out, {
+        "max_tokens": max_tokens, "enable_thinking": enable_thinking, "temperature": temperature,
+        "stream": stream, "stopped": _stopped, "seconds": round(_time.time() - t0, 2),
+        "stats": vars(stats) if stats is not None else None,
+    })
+    return out
 
 
 def _strip_think(text: str) -> str:
@@ -2489,12 +2501,15 @@ def _vision(image: str, question: str) -> str:
     _status("🖼 looking at the image…")
     with _lock:
         if hasattr(model, "describe"):          # the MLX model does text AND vision
-            return model.describe(str(path), prompt, max_tokens=512)
-        from .vision import VisionModel          # torch fallback
-        global _vision_fallback
-        if _vision_fallback is None:
-            _vision_fallback = VisionModel()
-        return _vision_fallback.describe(str(path), prompt, max_tokens=512)
+            out = model.describe(str(path), prompt, max_tokens=512)
+        else:
+            from .vision import VisionModel      # torch fallback
+            global _vision_fallback
+            if _vision_fallback is None:
+                _vision_fallback = VisionModel()
+            out = _vision_fallback.describe(str(path), prompt, max_tokens=512)
+    _log_interaction("vision", [{"role": "user", "content": prompt, "image": str(path)}], out)
+    return out
 
 
 def _chat_file(key: str):

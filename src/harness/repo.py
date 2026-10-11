@@ -17,6 +17,11 @@ import subprocess
 from pathlib import Path
 
 from .model import load_model
+from .interaction_log import log_interaction as _il
+
+
+def _log(messages, response, kind):
+    _il(kind, messages, response)
 
 
 def _notebook_root() -> Path:
@@ -395,7 +400,9 @@ def explain_file(rel_path: str, model=None, max_tokens: int = 700) -> str:
             "(4) anything notable or a possible bug. Be clear and concrete; short paragraphs or bullets."},
         {"role": "user", "content": f"File: {rel_path}\n```python\n{code[:6000]}\n```"},
     ]
-    return _strip_think(model.generate(messages, max_tokens=max_tokens))
+    out = _strip_think(model.generate(messages, max_tokens=max_tokens))
+    _log(messages, out, "repo.explain_file")
+    return out
 
 
 def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400, history=None,
@@ -438,7 +445,10 @@ def ask_repo(question: str, model=None, k: int = 5, max_tokens: int = 400, histo
         "functions, options), present them as a Markdown table with clear column headers."}
     convo = [{"role": m["role"], "content": m["content"]} for m in prior[:-1][-6:]]  # drop the current turn
     user = {"role": "user", "content": f"Code from the repository:\n{context[:5000]}\n\nQuestion: {question}"}
-    return _strip_think(model.generate([system] + convo + [user], max_tokens=max_tokens))
+    msgs = [system] + convo + [user]
+    out = _strip_think(model.generate(msgs, max_tokens=max_tokens))
+    _log(msgs, out, "repo.ask_repo")
+    return out
 
 
 def _first_doc_line(d: Path) -> str:
