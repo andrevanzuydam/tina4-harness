@@ -1821,6 +1821,14 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         r"|\bexplain\b[^.?!]*\b(to me|like i'?m|in simple|simply|step[- ]by[- ]step)\b"
         r"|\bgive\s+me\s+a\s+(tutorial|lesson|walkthrough|primer|crash course)\b"
         r"|\bi\s+want\s+to\s+(learn|understand)\b", last_user, re.I))
+    # "how do classes work?", "show me how decorators work" — a CONCEPTUAL question (how a Python
+    # thing works) wants an EXPLANATION, not a code dump. Only when NO cell is selected (with a cell,
+    # "how does this work?" is about THAT cell, handled as help/debug).
+    if not context.strip() and re.search(
+            r"\bshow me how\b.{0,40}\bworks?\b|\bhow\s+(?:do|does)\b[^?]{0,40}\bworks?\b"
+            r"|\bhow\s+(?:do|does)\s+(?:a|an|the)?\s*\w+s?\s+work\b", last_user, re.I) and not re.search(
+            r"\b(this|it|that|the\s+(?:code|cell|function|method|loop|script))\b", last_user, re.I):
+        teach_me = True
     if intent == "ask":
         # A bare "help" (with a selected cell) means: explain THIS cell and flag any problems, and —
         # if a change is warranted — hand back the COMPLETE corrected cell so the UI can apply it.
