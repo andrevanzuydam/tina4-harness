@@ -30,3 +30,4 @@ Pillow>=10
 
 # Screen snapshot for the vision 'see what's on screen' feature (macOS)
 pyobjc-framework-Quartz; sys_platform == 'darwin'
+pytest>=8.0        # generated tests use pytest-style asserts + pytest.approx

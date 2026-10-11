@@ -70,6 +70,11 @@ _CHAT_SYSTEM = (
     "    return text.upper()\n```\n"
     "- For a 'what is / how do I' question, answer briefly in Python terms, using the documentation "
     "context below if given.\n"
+    "- `pytest` IS INSTALLED in this notebook — it is the testing base. When the user asks to TEST "
+    "something, write pytest-style tests: `def test_<name>():` functions with `assert` on the value "
+    "the code SHOULD return (use `pytest.approx(...)` for floats, with `import pytest`). Assert the "
+    "EXPECTED result you compute yourself, so a wrong implementation FAILS the test — never just "
+    "restate what the code currently does.\n"
     "- If code or an error is provided (a selection, the notebook, or the cell output), USE it "
     "directly. NEVER ask the user to paste or share the code again."
 )
@@ -126,4 +131,15 @@ CALL = (
     "argument and print the result. For example, if the defined function were "
     "`def area(w, h): ...`, you would write `print(area(3, 4))`. Use the function's REAL name "
     "and arguments that match its parameters."
+)
+
+
+# --- test generation: pytest-style, EXPECTED values (not characterization of actual behaviour) ---
+PYTEST_FOR_FN = (
+    "Write ONLY a test for the function below, pytest-style. Use one or more "
+    "`def test_<name>():` functions with `assert` checking the value the function SHOULD return — "
+    "COMPUTE the correct expected result YOURSELF, do NOT just restate what the code does. For "
+    "floating-point results use `pytest.approx(...)` and add `import pytest` at the top. Cover a "
+    "couple of cases. Do NOT redefine the function, no `if __name__` block, no runner, no prose. "
+    "ONE ```python block:\n```python\n"
 )

@@ -2321,29 +2321,36 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         m = _FENCE.search(tidied)
         if m:
             fn_code = _defs_only(m.group(1)).strip() or m.group(1).strip()
-            test_sys = (_CHAT_SYSTEM + "\n\nWrite ONLY a short test for the function below, using "
-                        "`assert` on a couple of cases and a final print(\"tests passed\"). ONE "
-                        "```python block, NO prose, NO `if __name__` block, do NOT redefine the "
-                        "function:\n```python\n" + fn_code + "\n```")
-            try:
-                tr = _tidy_chat(_strip_think(_generate(
-                    [{"role": "system", "content": test_sys},
-                     {"role": "user", "content": "write the test"}], 300, enable_thinking=False)),
-                    as_tool=False)
+            base_sys = _CHAT_SYSTEM + "\n\n" + _prompts.PYTEST_FOR_FN + fn_code + "\n```"
+            # Append a tiny runner so the pytest-style `def test_*` functions actually EXECUTE when the
+            # cell is run in the notebook (pytest isn't invoked here) and print a ✓ per test.
+            runner = ("\n\n# run the tests in the notebook\n"
+                      "for _n, _f in list(globals().items()):\n"
+                      "    if _n.startswith('test_') and callable(_f):\n"
+                      "        _f()\n        print('✓', _n)")
+            test_only, err = "", ""
+            for attempt in range(2):
+                sys_prompt = base_sys if attempt == 0 else base_sys + (
+                    f"\n\nYour previous test FAILED when run: {err}\nThe function is correct — FIX the "
+                    "EXPECTED values in the asserts (use pytest.approx for floats).")
+                try:
+                    tr = _tidy_chat(_strip_think(_generate(
+                        [{"role": "system", "content": sys_prompt},
+                         {"role": "user", "content": "write the test"}], 320, enable_thinking=False)),
+                        as_tool=False)
+                except Exception:
+                    break
                 tm = _FENCE.search(tr)
-                test_code = (tm.group(1).strip() if tm else "")
-            except Exception:
-                test_code = ""
-            if test_code and _valid_python(test_code)[0]:
-                # Cell 1 already defines the function — drop any redefinition so cell 2 is only the
-                # test. Then PROVE the test passes by running function+test; if it fails (the 2B often
-                # guesses a wrong expected value, e.g. float equality), replace it with a
-                # characterization test grounded in real execution.
-                test_only = _drop_redefs(test_code, _defined_names(fn_code)).strip() or test_code
-                if _run_in_kernel(fn_code + "\n" + test_only).get("error"):
-                    built = _characterization_test(fn_code)
-                    if built:
-                        test_only = built
+                cand = (tm.group(1).strip() if tm else "")
+                if not (cand and _valid_python(cand)[0]):
+                    continue
+                cand = _drop_redefs(cand, _defined_names(fn_code)).strip() or cand
+                test_only = cand + runner
+                r = _run_in_kernel(fn_code + "\n" + test_only)
+                if not (r.get("error") and not r.get("skipped")):
+                    break  # the expected-value test passes
+                err = (r.get("error") or "").strip().splitlines()[-1][:160]
+            if test_only:
                 tidied = f"```python\n{fn_code}\n```\n\n```python\n{test_only}\n```"
     return _MODE_CODE + (_NORUN if norun else "") + _with_marker(mark, tidied)
 

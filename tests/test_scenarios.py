@@ -155,8 +155,9 @@ def test_add_two_cells_code_and_test():
     assert mode == "code"
     assert len(blocks) == 2                        # one cell for the function, one for the test
     fn, test = blocks[0].strip(), blocks[1].strip()
+    fn_name = re.search(r"def\s+(\w+)\s*\(", fn).group(1)
     assert valid(fn) and "def " in fn              # cell 1 defines the function
-    assert valid(test) and "assert" in test        # cell 2 is a real assert-based test
-    assert "def " not in test                       # the test cell does NOT redefine the function
-    r = lab._run_in_kernel(fn + "\n" + test)        # both cells run in sequence and the test passes
+    assert valid(test) and "assert" in test         # cell 2 is a real assert-based test
+    assert not re.search(rf"def\s+{fn_name}\s*\(", test)  # the test cell does NOT redefine the function
+    r = lab._run_in_kernel(fn + "\n" + test)         # both cells run in sequence and the test passes
     assert not r.get("error"), r
