@@ -271,12 +271,50 @@ _CHAT_SYSTEM = (
 )
 
 
+def _detable_block(s: str) -> str:
+    """Convert Markdown tables in a (fence-free) chunk to bullet lists — a table renders as cramped,
+    unreadable columns in the narrow chat panel. Header cells become labels on each row's bullet."""
+    lines = s.split("\n")
+    out: list[str] = []
+    i = 0
+    row_re = re.compile(r"^\s*\|.*\|\s*$")
+    sep_cell = re.compile(r"^:?-{1,}:?$")
+    while i < len(lines):
+        if row_re.match(lines[i]):
+            tbl = []
+            while i < len(lines) and row_re.match(lines[i]):
+                tbl.append(lines[i])
+                i += 1
+            rows = []
+            for r in tbl:
+                cells = [c.strip() for c in r.strip().strip("|").split("|")]
+                if cells and all(c == "" or sep_cell.match(c) for c in cells):
+                    continue  # the |---|---| separator row
+                rows.append(cells)
+            if not rows:
+                continue
+            header = rows[0] if len(rows) > 1 else None
+            data = rows[1:] if header else rows
+            for r in data:
+                if header and len(header) == len(r):
+                    out.append("- " + "; ".join(f"**{h}**: {c}" for h, c in zip(header, r) if c))
+                else:
+                    out.append("- " + " · ".join(c for c in r if c))
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out)
+
+
 def _demote_headings(text: str) -> str:
-    """Turn Markdown headings (# .. ######) into bold OUTSIDE code fences — in a chat bubble a heading
-    renders as oversized text and looks broken. Leaves `# comments` inside ```code``` blocks alone."""
+    """Make a reply render cleanly in a chat bubble, OUTSIDE code fences: Markdown headings (# ..
+    ######) become bold (a heading renders as oversized text), and Markdown TABLES become bullet
+    lists (they render as cramped columns in the narrow panel). `# comments` inside ```code``` and
+    code tables are left alone."""
     parts = re.split(r"(```.*?```)", text, flags=re.S)
     for i in range(0, len(parts), 2):  # even indices are outside fenced code
         parts[i] = re.sub(r"(?m)^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*$", r"**\1**", parts[i])
+        parts[i] = _detable_block(parts[i])
     return "".join(parts)
 
 
