@@ -1540,7 +1540,11 @@ class ChatPanel extends Widget {
     // question phrasing ("How about in a new notebook?") and we create the notebook before placing.
     const wantsNewNotebook = /\b(new|fresh|another|separate|blank|different)\s+notebook\b/i.test(text);
     const hasError = /error|traceback/i.test(output);
+    // "teach me X" / "walk me through" / "help me understand" wants to LEARN — an explanation, not
+    // code. Route it to ask so the kernel's teaching mode kicks in (no code dump).
+    const teachMe = /\b(teach me|walk me through|help me (understand|learn|grasp)|i want to (learn|understand)|give me a (tutorial|lesson|walkthrough|primer))\b/i.test(text);
     const isQuestion =
+      teachMe ||
       /\b(what|why|how|explain|mean|describe|tell me|overview|who|when|where|difference|compare|summar)\b/i.test(text) ||
       /\b(i (?:want|'?d like|would like) to know|know more about|learn about|more about|curious about|info(?:rmation)? (?:on|about))\b/i.test(text) ||
       text.trim().endsWith('?');

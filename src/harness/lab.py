@@ -1864,6 +1864,14 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     help_run: dict = {}
     assertion: list = []
     cell_help = False
+    debug_phrasing = False
+    # A TEACHING request ("teach me X", "walk me through", "help me understand") wants to LEARN — an
+    # explanation that builds understanding, NOT a dump of code. It overrides the code-ish routing.
+    teach_me = bool(re.search(
+        r"\bteach\s+me\b|\bwalk\s+me\s+through\b|\bhelp\s+me\s+(understand|learn|grasp|wrap my head)\b"
+        r"|\bexplain\b[^.?!]*\b(to me|like i'?m|in simple|simply|step[- ]by[- ]step)\b"
+        r"|\bgive\s+me\s+a\s+(tutorial|lesson|walkthrough|primer|crash course)\b"
+        r"|\bi\s+want\s+to\s+(learn|understand)\b", last_user, re.I))
     if intent == "ask":
         # A bare "help" (with a selected cell) means: explain THIS cell and flag any problems, and —
         # if a change is warranted — hand back the COMPLETE corrected cell so the UI can apply it.
@@ -1871,15 +1879,37 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             r"^\s*(?:please\s+|pls\s+|plz\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?h[ae]lp\b",
             last_user, re.I,
         ))
+        # A DEBUGGING question ("what's wrong?", "why doesn't this work?", "is this right?", "find the
+        # bug") is help too — EXPLAIN the problem and offer the fix, never generate a new cell. (With a
+        # cell selected it validates + offers a fix; without one it still just explains.)
+        debug_phrasing = bool(re.search(
+            r"\bwhat'?s?\s+(wrong|the\s+(bug|problem|issue|mistake))\b|\bwhat\s+is\s+wrong\b"
+            r"|\bwhy\s+(is|isn'?t|does|does\s*n'?t|wo\s*n'?t|doesnt|isnt)\b"
+            r"|\b(spot|find|catch|see)\s+the\s+(bug|problem|issue|mistake)\b"
+            r"|\bis\s+(this|that|it|my\s+code)\s+(right|correct|wrong|broken|ok|okay|a\s+bug)\b"
+            r"|\b(debug|diagnose)\b|\b(not|n'?t)\s+working\b|\bdoes\s*n'?t\s+work\b|\bbroken\b",
+            last_user, re.I))
+        is_debug_q = debug_phrasing and bool(context.strip())
         # A pinned expectation ("add(3,4)==7", "assert …") turns help into a real test oracle.
         assertion = _extract_assertion(last_user) if context.strip() else []
-        cell_help = is_help or bool(assertion)
+        cell_help = is_help or is_debug_q or bool(assertion)
         if cell_help:
             # Run the cell so the model's explanation is grounded in reality. The real decision about
             # whether there's a bug is made AFTER generation by running the proposal (and the pinned
             # assertion) — validation, not prompting.
             _status("▶ running the cell…")
-            help_run = _run_in_kernel(context)
+            # Run the cell to ground the explanation in reality — WITH the notebook's other defs in
+            # scope. For a cell that only DEFINES functions (no output alone), also CALL them with
+            # sample inputs so the model sees what they ACTUALLY return — that's how "what's wrong?"
+            # gets diagnosed (e.g. add_numbers(2, 3) returns 3, not 5).
+            try:
+                nb_defs = _defs_only(notebook_code).strip() if notebook_code else ""
+            except Exception:
+                nb_defs = ""
+            pre = (nb_defs + "\n") if nb_defs else ""
+            help_run = _run_in_kernel(pre + context)
+            probe = _probe_calls(context)
+            probe_run = _run_in_kernel(pre + context + "\n" + probe) if probe else None
             system_text += (
                 "\n\nThe user asked for help while this cell is selected. Be BRIEF: in AT MOST 2 short "
                 "sentences, say what it does and (if anything) what's wrong — do NOT analyse it line "
@@ -1900,11 +1930,26 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                 )
             if help_run.get("ran") and help_run.get("skipped") is None:
                 system_text += "\n\nFor reference, running this cell just now: " + _run_summary(help_run)
+            if probe_run and (probe_run.get("out") or "").strip():
+                system_text += (
+                    "\n\nI CALLED its function(s) with sample inputs and got these ACTUAL results — use "
+                    "them to judge whether it is correct (e.g. a result that isn't the real sum/answer "
+                    "means a bug):\n" + probe_run["out"].strip()[:600]
+                )
         else:
             overview = bool(re.search(
                 r"\b(tell me about|overview|what(?:'s| is| are)|give me a rundown|rundown|summar\w*|"
                 r"introduc\w*|explain .{0,20}\b(framework|library|project|tina4))\b", last_user, re.I))
-            if overview:
+            if teach_me:
+                system_text += (
+                    "\n\nThis is a TEACHING request — the user wants to LEARN this, not receive code. "
+                    "EXPLAIN it clearly and build understanding: start with the core idea in one or two "
+                    "plain sentences, then a few short points that develop it (what it is, why it "
+                    "matters, how to think about it). Use AT MOST ONE tiny snippet, and only if it "
+                    "genuinely aids understanding — do NOT dump a program, multiple code blocks, or a "
+                    "cell to run. End by inviting a follow-up. Teaching is explaining, not coding."
+                )
+            elif overview:
                 system_text += (
                     "\n\nThis is an OVERVIEW question. Answer like a person would on first being asked "
                     "— a one-sentence plain intro, then 3 to 5 SHORT bullets of the main points, one "
@@ -2114,7 +2159,8 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     # also starves the small model's tendency to ramble into a repetition loop.
     gen_cap, gen_think = chat_cap, enable_thinking
     if intent == "ask" and not cell_help:
-        gen_cap, gen_think = min(chat_cap, 240), False   # a plain explanation: short, no reasoning
+        # A plain explanation is short; a "teach me" explanation gets a little more room to build it.
+        gen_cap, gen_think = min(chat_cap, 380 if teach_me else 240), False
     elif cell_help:
         gen_think = False   # help: skip the reasoning phase so it stays terse (the fix code still fits)
     _status("💭 thinking…")
@@ -2124,9 +2170,12 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     # question, so its own answer decides ask-vs-code — a misrouted intent from the UI self-corrects
     # here. (Help/fix/assertion already fixed intent to 'ask' via cell_help; leave those.)
     if not cell_help:
-        # Strict when the caller asked a QUESTION (keep explanations as prose); looser when they
-        # already intended code, so a captioned code reply (common on Gemma) still renders as code.
-        intent = "code" if _starts_with_code(reply, strict=(intent == "ask")) else "ask"
+        if debug_phrasing or teach_me:
+            intent = "ask"  # a debugging question / a "teach me" request EXPLAINS — never a new cell
+        else:
+            # Strict when the caller asked a QUESTION (keep explanations as prose); looser when they
+            # already intended code, so a captioned code reply (common on Gemma) still renders as code.
+            intent = "code" if _starts_with_code(reply, strict=(intent == "ask")) else "ask"
     if intent == "code":
         _status("🔎 checking syntax…")
     if intent == "ask":
@@ -2186,7 +2235,10 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             real_fix = verdict in ("fixes_error", "changes_behaviour")
 
             reply = re.sub(r"```(?:python)?\s*\n.*?```", "", reply, flags=re.S).strip()
-            reply = _drop_bug_claims(reply)
+            # For a plain "help" we suppress unproven bug claims (don't invent bugs). But when the user
+            # EXPLICITLY asks "what's wrong?", keep the model's assessment — they want it.
+            if not is_debug_q:
+                reply = _drop_bug_claims(reply)
             if real_fix:
                 _status("▶ validated the fix…")
                 # Keep the proposal as THE code block so the extension offers to apply it, with the
@@ -2207,6 +2259,20 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                     f"_▶ Running it raised: {help_run.get('error')}.{extra} Tell me the behaviour you "
                     "want and I'll fix it._"
                 )
+            elif is_debug_q:
+                # The user asked "what's wrong?" but nothing was PROVEN broken by running it. Show the
+                # ACTUAL behaviour and let them judge against intent — don't claim "nothing to fix".
+                probe = _probe_calls(context)
+                shown = ""
+                if probe:
+                    pr = _run_in_kernel((nb_defs + "\n" if nb_defs else "") + context + "\n" + probe)
+                    if (pr.get("out") or "").strip():
+                        shown = pr["out"].strip()[:300].replace("\n", " · ")
+                tail = (f"_▶ What it actually does: {shown}. I couldn't prove a bug by running it — "
+                        "check that's the behaviour you intended; if not, tell me the expected result._"
+                        if shown else "_▶ It runs without error — tell me the behaviour you expected and "
+                        "I'll pin down the problem._")
+                reply = (reply + "\n\n" if reply else "") + tail
             else:
                 # Ran clean and nothing changes the output → there is no bug.
                 ran = _run_summary(help_run) if (help_run.get("ran") and not help_run.get("skipped")) else "it is valid Python"
@@ -2238,7 +2304,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             import json as _json
             return _CHOICES_SENTINEL + _json.dumps(choices)
         # Keep explanations short (the user can ask for more); code/help kept full above.
-        return _MODE_ASK + _with_marker(mark, _cap_prose(reply, 700))
+        return _MODE_ASK + _with_marker(mark, _cap_prose(reply, 1200 if teach_me else 700))
     tidied = _tidy_chat(reply, as_tool="tool" in last_user.lower())
     # If the model stubbed or wrote invalid Python, retry once (ask the model — no canned reply).
     m = _FENCE.search(tidied)
@@ -2280,12 +2346,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             # Honour "check before run": insert it, but DON'T auto-run code we never checked.
             norun = True
         elif code0 and _valid_python(code0)[0] and _safe_to_run(code0):
-            # Run the check WITH the notebook's own definitions in scope (imports/defs/classes only, so
-            # we don't re-run side-effecting top-level code), so generated code that CALLS a function
-            # defined in another cell — e.g. "test my add_numbers function" — resolves it instead of
-            # a false NameError when that cell hasn't been run yet.
+            # Run the check WITH the notebook's AND the selected cell's definitions in scope
+            # (imports/defs/classes only, so we don't re-run side-effecting top-level code), so
+            # generated code that CALLS a function defined elsewhere — e.g. "write a test for this
+            # function" / "test my add_numbers function" — resolves it instead of a false NameError
+            # when that cell hasn't been run yet.
             try:
-                nb_defs = _defs_only(notebook_code).strip() if notebook_code else ""
+                nb_defs = _defs_only((notebook_code or "") + "\n" + (context or "")).strip()
             except Exception:
                 nb_defs = ""
             _check = lambda c: _run_in_kernel((nb_defs + "\n" + c) if nb_defs else c)  # noqa: E731
