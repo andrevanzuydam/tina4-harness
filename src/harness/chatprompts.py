@@ -73,3 +73,57 @@ _CHAT_SYSTEM = (
     "- If code or an error is provided (a selection, the notebook, or the cell output), USE it "
     "directly. NEVER ask the user to paste or share the code again."
 )
+
+
+# --- situational instructions appended to the base prompt by _chat -------------------------------
+# Each is added as `system_text += CONST`; the leading blank line keeps them separated.
+
+MULTI_CELL = (
+    "\n\nThe user wants MULTIPLE cells. Output ONE ```python code block PER cell (this "
+    "overrides the single-block rule). Do NOT combine them, and do NOT use an "
+    "`if __name__ == \"__main__\":` block — put the test in its OWN separate block that calls "
+    "the function with `assert`. Format EXACTLY like this, two separate blocks:\n"
+    "```python\ndef add(a, b):\n    return a + b\n```\n"
+    "```python\nassert add(2, 3) == 5\nprint(\"ok\")\n```"
+)
+
+HELP = (
+    "\n\nThe user asked for help while this cell is selected. Be BRIEF: in AT MOST 2 short "
+    "sentences, say what it does and (if anything) what's wrong — do NOT analyse it line "
+    "by line, do NOT use headings, tables, or section labels like 'How to Fix It', and do "
+    "NOT add closing remarks. If something is wrong, give the COMPLETE corrected cell as "
+    "ONE ```python code block (ready to run); if it looks fine, output no code block. Use "
+    "the selected code below directly — never ask the user to paste or share it again."
+)
+
+TEACH = (
+    "\n\nThis is a TEACHING request — the user wants to LEARN this, not receive code. "
+    "EXPLAIN it clearly and build understanding: start with the core idea in one or two "
+    "plain sentences, then a few short points that develop it (what it is, why it "
+    "matters, how to think about it). Use AT MOST ONE tiny snippet, and only if it "
+    "genuinely aids understanding — do NOT dump a program, multiple code blocks, or a "
+    "cell to run. End by inviting a follow-up. Teaching is explaining, not coding."
+)
+
+OVERVIEW = (
+    "\n\nThis is an OVERVIEW question. Answer like a person would on first being asked "
+    "— a one-sentence plain intro, then 3 to 5 SHORT bullets of the main points, one "
+    "line each. Do NOT dump the whole history or every feature; no walls of text, no "
+    "code block. End with one line inviting the user to pick a point to go deeper on. "
+    "Expand only when they ask."
+)
+
+QUESTION = (
+    "\n\nThis is a QUESTION, not a build request. EXPLAIN clearly and concisely; show "
+    "at most a tiny corrected snippet inline. Do NOT output a full program or a cell "
+    "to run. Prefer a few short bullets over a long paragraph."
+)
+
+CALL = (
+    "\n\nThe user wants to CALL a function that is ALREADY defined (in the notebook or an open "
+    "file) — do NOT define a new function, and do NOT invent one named 'call'. Write just ONE "
+    "or two lines that invoke the EXISTING function by its real name with a sensible example "
+    "argument and print the result. For example, if the defined function were "
+    "`def area(w, h): ...`, you would write `print(area(3, 4))`. Use the function's REAL name "
+    "and arguments that match its parameters."
+)
