@@ -90,7 +90,10 @@ class _Handler(BaseHTTPRequestHandler):
         with _slots:  # bound concurrency to HARNESS_THREADS
             try:
                 data = self._body()
-                if self.path == "/generate":
+                if self.path in ("/api/chat", "/api/generate"):
+                    from .ollama import chat
+                    chat(self, data, _get(), _model_lock, self.path == "/api/generate")
+                elif self.path == "/generate":
                     self._generate(data)
                 elif self.path == "/describe":
                     self._describe(data)

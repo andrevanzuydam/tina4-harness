@@ -124,13 +124,13 @@ class MLXModel(HarnessModel):
 
     # --- text generation -------------------------------------------------------------
     def generate(self, messages, on_text=None, max_tokens=None, temperature=None,
-                 enable_thinking=True):
+                 enable_thinking=True, raw_prompt=None):
         from mlx_vlm import stream_generate
 
         self._stop.clear()  # fresh run; request_stop() will set this to interrupt
         temp = self.settings.temperature if temperature is None else temperature
         limit = max_tokens or self.settings.max_tokens
-        prompt = self._render(messages, enable_thinking)
+        prompt = raw_prompt if raw_prompt is not None else self._render(messages, enable_thinking)
 
         # A repetition penalty stops the small model degenerating into a loop (e.g. "No ORM, No
         # routing, …" forever). 1.3 over the last ~48 tokens is a sane default; tune via env.
@@ -185,6 +185,12 @@ class MLXModel(HarnessModel):
                     Path(img_path).unlink()
                 except Exception:
                     pass
+        self.last_stats = GenStats(
+            prompt_tokens=getattr(result, "prompt_tokens", 0),
+            generation_tokens=getattr(result, "generation_tokens", 0),
+            tokens_per_second=round(getattr(result, "generation_tps", 0.0) or 0.0, 1),
+            peak_gb=round(self._mx.get_peak_memory() / GB, 3),
+        )
         return result.text if hasattr(result, "text") else str(result)
 
     # --- telemetry -------------------------------------------------------------------
