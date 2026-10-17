@@ -1415,6 +1415,19 @@ def _typecheck_summary(res: dict) -> str:
     return f"does not type-check: {head}" + (f" (+{len(errs) - 1} more)" if len(errs) > 1 else "")
 
 
+_TYPING_EDIT = re.compile(
+    r"\btype[\s-]?hints?\b|\btype[\s-]?annotations?\b|\bannotat\w*|\badd\w*\s+types?\b|\btyping\b",
+    re.I,
+)
+
+
+def _is_typing_edit(instruction: str) -> bool:
+    """True when a code-EDIT instruction is specifically about adding/fixing TYPE annotations — the
+    trigger for the semantic-typing self-gate (run mypy on the result, retry on its errors, flag
+    honestly if the types still don't check). Only meaningful alongside an edit of selected code."""
+    return bool(_TYPING_EDIT.search(instruction or ""))
+
+
 _BUG_CLAIM = re.compile(
     r"\b(bugs?|broken|errors?|fix(?:ed|es)?|fixing|wrong|incorrect|fails?|failing|failure|"
     r"missing|doesn'?t|does not|won'?t|will not|never\s+returns?|syntaxerror|typeerror|"
@@ -2191,6 +2204,7 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         r"\b(remov\w*|delet\w*|strip\w*|get rid|take (out|away)|clean\s*up|tidy|simplif\w*|drop\w*|"
         r"without|fix\w*|edit\w*|updat\w*|chang\w*|refactor\w*|rewrit\w*|modif\w*|replace|rename|"
         r"add\w*|insert\w*|include|wrap|annotat\w*)\b", last_user, re.I))
+    is_typing_edit = is_edit and _is_typing_edit(last_user)
     if is_edit:
         system_text += (
             "\n\nThe user wants to EDIT the selected code below — apply exactly the change they asked "
@@ -2199,6 +2213,13 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             "they did not ask for, and do NOT keep the part they asked to remove. Reply with ONE "
             "```python block containing the whole edited cell:\n```python\n" + context.strip() + "\n```"
         )
+        if is_typing_edit:
+            system_text += (
+                "\n\nAdd CORRECT type annotations that a static type checker (mypy) ACCEPTS: each "
+                "annotation must match what the code actually accepts and returns (e.g. a function "
+                "that returns `a + b` of two `int`s is `-> int`, not `-> str`). Annotate parameters "
+                "and return types; don't change the behaviour."
+            )
     elif context.strip():
         if about_code:
             system_text += (
@@ -2507,6 +2528,50 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
                         "get it to run cleanly on my own — here's my best attempt. Can you point me at "
                         "the right approach (or confirm the API)?")
                 return _MODE_ASK + _with_marker(mark, note + f"\n\n```python\n{attempt}\n```")
+    # Semantic-typing self-gate: when the edit was about TYPE HINTS, don't trust that a `->` appeared
+    # — run mypy on the result (the third oracle, after run-it and assert-value). On a type error,
+    # retry feeding mypy's own message back; if it still won't check, insert the best attempt but flag
+    # it HONESTLY rather than pretend the types are right. (Wrong types still RUN, so we paste and warn
+    # instead of deferring the way a runtime error does.)
+    if is_typing_edit and intent == "code" and not is_revision and not _stopped:
+        mv = _FENCE.search(tidied)
+        cand = mv.group(1) if mv else ""
+        if cand and _valid_python(cand)[0]:
+            tc = _typecheck(cand)
+            attempts = 0
+            while tc.get("checked") and not tc["ok"] and attempts < 2 and not _stopped:
+                attempts += 1
+                _status("🔎 type-checking my annotations with mypy…")
+                tcsys = system_text + (
+                    "\n\nThe type hints you added do NOT type-check. mypy reports: "
+                    + "; ".join(tc["errors"][:3])
+                    + "\nReturn the COMPLETE code as ONE ```python block whose annotations mypy "
+                    "ACCEPTS. Fix the ANNOTATIONS to match what the code actually does — do NOT "
+                    "change the behaviour, and do NOT remove the hints.")
+                try:
+                    rt = _tidy_chat(_strip_think(_generate(
+                        [{"role": "system", "content": tcsys}] + recent, chat_cap,
+                        enable_thinking=enable_thinking)), as_tool=False)
+                except Exception:
+                    break
+                mr = _FENCE.search(rt)
+                if not mr or not _valid_python(mr.group(1))[0]:
+                    continue
+                tc2 = _typecheck(mr.group(1))
+                if tc2.get("checked"):
+                    tc = tc2
+                if tc2.get("ok"):
+                    tidied = rt
+                    break
+            if tc.get("checked") and not tc["ok"]:
+                mv2 = _FENCE.search(tidied)
+                attempt = mv2.group(1) if mv2 else cand
+                note = ("I added the type hints, but they don't type-check — mypy says: "
+                        f"`{tc['errors'][0]}`. I've inserted my best attempt; want me to adjust the "
+                        "annotations (or the code) so the types line up?")
+                return _MODE_CODE + (_NORUN if norun else "") + _with_marker(
+                    mark, note + f"\n\n```python\n{attempt}\n```")
+
     # "add 2 cells — one for code and one to test it": the 2B won't emit two blocks, so split the
     # function into its own cell and generate a REAL test (assert) for it as a second cell.
     if multi_cell and re.search(r"\btest", last_user, re.I):

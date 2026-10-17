@@ -58,7 +58,7 @@ is the ground truth.
 - [x] `_typecheck(code, strict=False)` + `_typecheck_summary(res)` in `src/harness/lab.py` (tmp file + mypy subprocess + parse; never raises; skips if mypy absent)
 - [x] Deterministic unit tests for `_typecheck` (positive clean, 2 negatives, skip-if-mypy-absent, summary) — 5 tests in test_chat_logic.py
 - [x] Added a sibling live scenario `test_added_type_hints_actually_typecheck` asserting the model's hints TYPE-CHECK, not just `->`
-- [ ] (Stretch) wire `_typecheck` as a validation gate on the add-type-hints path: grounded retry + honest flag on failure
+- [x] (Stretch) wire `_typecheck` as a self-gate on the add-type-hints path: `_is_typing_edit` detects the instruction, mypy runs on the result, up to 2 grounded retries feed mypy's message back, and on persistent failure it INSERTS the best attempt but flags it honestly (MODE_CODE + note). The is_edit prompt now also asks for mypy-acceptable annotations up front.
 - [x] (Stretch, positive half) live scenario: "add type hints to this" → result type-checks clean  — negative probe is the deterministic suite
 
 ## Tests (written first, real — no mocks) — asserts grounded in mypy 2.4.0's ACTUAL output
@@ -67,12 +67,14 @@ is the ground truth.
 - [x] `_typecheck` flags bad call arg `add("x", 1)` ('incompatible type'; `Argument 1 to "add" has incompatible type "str"; expected "int"`)
 - [x] `_typecheck` degrades gracefully (skipped) when mypy isn't installed — monkeypatched find_spec
 - [x] `_typecheck_summary` reads human ('types check out' / 'does not type-check: …')
-- [x] live: the model's added hints TYPE-CHECK (`test_added_type_hints_actually_typecheck`)
+- [x] live: the model's added hints TYPE-CHECK (`test_added_type_hints_actually_typecheck`) — now routed through the gate
+- [x] `_is_typing_edit` routes only type instructions to the gate (3 positive, 3 negative)
 
 ## Bugs
 - (none)
 
 ## Commits
-- (this milestone) _typecheck + _typecheck_summary in lab.py; 5 deterministic + 1 live test; mypy dep
+- (eval core) _typecheck + _typecheck_summary in lab.py; 5 deterministic + 1 live test; mypy dep — d5a1803
+- (self-gate) _is_typing_edit + mypy self-gate on the add-type-hints path (grounded retry + honest flag)
 
-## Status: Core DONE — the eval ships (3.15 113 passed; 3.12 83 passed, 30 skipped). Remaining: the stretch self-check GATE on the add-type-hints path (generate → type-check → grounded retry → honest flag).
+## Status: DONE — eval + self-check gate both ship. Generate → mypy type-check → up to 2 grounded retries → insert-but-flag-honestly if still wrong.

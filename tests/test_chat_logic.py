@@ -352,3 +352,15 @@ def test_typecheck_summary_reads_like_a_human():
     assert lab._typecheck_summary(lab._typecheck("def f(x: int) -> int:\n    return x\n")) == "types check out"
     bad = lab._typecheck_summary(lab._typecheck("def f(x: int) -> str:\n    return x\n"))
     assert bad.startswith("does not type-check:")
+
+
+def test_is_typing_edit_routes_only_type_instructions_to_the_gate():
+    # these SHOULD trigger the mypy self-gate
+    assert lab._is_typing_edit("add type hints to this function")
+    assert lab._is_typing_edit("add type-hints")
+    assert lab._is_typing_edit("annotate the parameters")
+    assert lab._is_typing_edit("add types")
+    # these are edits, but NOT about types — the gate must stay out of their way
+    assert not lab._is_typing_edit("remove the print statement")
+    assert not lab._is_typing_edit("convert this loop to a list comprehension")
+    assert not lab._is_typing_edit("add a docstring to this")
