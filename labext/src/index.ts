@@ -1563,8 +1563,16 @@ class ChatPanel extends Widget {
     // "teach me X" / "walk me through" / "help me understand" wants to LEARN — an explanation, not
     // code. Route it to ask so the kernel's teaching mode kicks in (no code dump).
     const teachMe = /\b(teach me|walk me through|help me (understand|learn|grasp)|i want to (learn|understand)|give me a (tutorial|lesson|walkthrough|primer))\b/i.test(text);
+    // A complaint that existing code is BROKEN ("it doesn't work", "my method doesn't work",
+    // "this is wrong", "it's buggy") is a DEBUG request about the current cell — route it to ask so
+    // the cell's code is attached (mode !== 'create') and the kernel's debug path can examine it,
+    // instead of falling through to 'create' and asking "what didn't work?" with no code in hand.
+    const complainsBroken =
+      /\b(does(?:n'?t| not)|do(?:n'?t| not)|won'?t|wo(?:n'?t| not)|isn'?t|is not|not)\s+(work|working|run|running|execut\w*|correct|right|functioning)\b/i.test(text) ||
+      /\b(broken|buggy|failing|crashes?|not\s+working|wrong\s+(?:answer|result|output|value))\b/i.test(text);
     const isQuestion =
       teachMe ||
+      complainsBroken ||
       /\b(what|why|how|explain|mean|describe|tell me|overview|who|when|where|difference|compare|summar)\b/i.test(text) ||
       /\b(i (?:want|'?d like|would like) to know|know more about|learn about|more about|curious about|info(?:rmation)? (?:on|about))\b/i.test(text) ||
       text.trim().endsWith('?');
