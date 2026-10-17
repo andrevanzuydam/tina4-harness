@@ -1428,6 +1428,21 @@ def _is_typing_edit(instruction: str) -> bool:
     return bool(_TYPING_EDIT.search(instruction or ""))
 
 
+_IMPLEMENT_VERB = re.compile(r"\b(code|write|implement|build|make|create|do|show)\b", re.I)
+_IMPLEMENT_REFERENT = re.compile(r"\b(it|this|that|them|the code|the snippet|the example)\b", re.I)
+
+
+def _is_implement_followup(text: str) -> bool:
+    """A short REFERENTIAL request like 'code it for me' / 'write it' / 'just do it' that means
+    'implement what we just discussed' — not a fresh, self-contained build request. The small model,
+    handed only the short phrase, loses the thread and asks 'what should I build?'; this lets the
+    harness resolve the reference against the conversation instead."""
+    t = (text or "").strip()
+    if not t or len(t.split()) > 8:
+        return False
+    return bool(_IMPLEMENT_VERB.search(t) and _IMPLEMENT_REFERENT.search(t))
+
+
 _BUG_CLAIM = re.compile(
     r"\b(bugs?|broken|errors?|fix(?:ed|es)?|fixing|wrong|incorrect|fails?|failing|failure|"
     r"missing|doesn'?t|does not|won'?t|will not|never\s+returns?|syntaxerror|typeerror|"
@@ -1943,6 +1958,22 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
         last_user, re.I))
     tina4_mode = explicit_tina4 or (asks_tina4 and not personal)
     mark = "🤖 " if tina4_mode else ""
+    # "code it for me" / "write it" / "just do it" as a FOLLOW-UP means: implement what we JUST
+    # discussed — don't lose the thread and ask "what should I build?". If the previous answer already
+    # showed runnable code, reuse it as a cell (deterministic, matches the demo the user just saw);
+    # otherwise tell the model explicitly to implement the prior topic rather than asking.
+    if intent == "code" and not context.strip() and _is_implement_followup(last_user):
+        prev = next((m.get("content", "") for m in reversed(messages[:-1])
+                     if m.get("role") == "assistant"), "")
+        prev_blocks = [b.strip() for b in re.findall(r"```(?:python)?\s*\n(.*?)```", prev, re.S)
+                       if b.strip() and _valid_python(b.strip())[0]]
+        if prev_blocks:
+            return _MODE_CODE + _with_marker(mark, "Here's that as a cell:\n\n```python\n"
+                                             + prev_blocks[-1] + "\n```")
+        system_text += (
+            "\n\nThe user's message is a FOLLOW-UP meaning: WRITE THE CODE for what was just discussed "
+            "in the conversation above. Do NOT ask what to build — produce the code as ONE "
+            "```python block.")
     if tina4_mode:
         try:
             from pathlib import Path as _Path

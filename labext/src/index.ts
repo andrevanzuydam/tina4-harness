@@ -1142,6 +1142,26 @@ class ChatPanel extends Widget {
       const r = this.rendermime.createRenderer('text/markdown');
       await r.renderModel(this.rendermime.createModel({ data: { 'text/markdown': content }, trusted: true }));
       bubble.appendChild(r.node);
+      // A Copy button on EACH code block (not just the whole-message copy below), so a snippet can
+      // be grabbed on its own.
+      for (const pre of Array.from(r.node.querySelectorAll('pre'))) {
+        const codeText = (pre.textContent || '').replace(/\n+$/, '');
+        const wrap = document.createElement('div');
+        wrap.className = 'harness-codewrap';
+        pre.parentNode?.insertBefore(wrap, pre);
+        wrap.appendChild(pre);
+        const btn = document.createElement('button');
+        btn.className = 'harness-codecopy';
+        btn.title = 'Copy code';
+        btn.textContent = 'Copy';
+        btn.onclick = (e: MouseEvent) => {
+          e.stopPropagation();
+          void navigator.clipboard.writeText(codeText);
+          btn.textContent = 'Copied';
+          window.setTimeout(() => (btn.textContent = 'Copy'), 1200);
+        };
+        wrap.appendChild(btn);
+      }
     } else {
       bubble.textContent = content;
     }

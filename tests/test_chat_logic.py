@@ -364,3 +364,28 @@ def test_is_typing_edit_routes_only_type_instructions_to_the_gate():
     assert not lab._is_typing_edit("remove the print statement")
     assert not lab._is_typing_edit("convert this loop to a list comprehension")
     assert not lab._is_typing_edit("add a docstring to this")
+
+
+# --- "code it for me" follow-up resolves to the prior turn (no context loss) ---------------------
+
+def test_is_implement_followup_detects_referential_requests():
+    assert lab._is_implement_followup("code it for me")
+    assert lab._is_implement_followup("write it")
+    assert lab._is_implement_followup("just do it")
+    assert lab._is_implement_followup("show me the code")
+    # a fresh, self-contained build request is NOT a referential follow-up
+    assert not lab._is_implement_followup("code a fibonacci function")
+    assert not lab._is_implement_followup("what is a list")
+
+
+def test_implement_followup_reuses_prior_code_block():
+    # "code it for me" after an answer that showed code must reuse THAT code as a cell — deterministic,
+    # no model call — instead of losing the thread and asking "what should I build?".
+    history = [
+        {"role": "user", "content": "How do I get the version of python"},
+        {"role": "assistant", "content": "Use the `sys` module.\n\n```python\nimport sys\nprint(sys.version)\n```"},
+        {"role": "user", "content": "code it for me"},
+    ]
+    raw = lab._chat(history, intent="code", think="off")
+    assert raw.startswith(lab._MODE_CODE)
+    assert "import sys" in raw and "sys.version" in raw

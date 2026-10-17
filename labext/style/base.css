@@ -302,3 +302,29 @@
   border-radius: 4px;
   padding: 0 4px;
 }
+/* Per-code-block Copy button: a chip at the top-right of each snippet, revealed on hover. */
+.harness-codewrap {
+  position: relative;
+}
+.harness-codecopy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: 1px solid var(--jp-border-color2);
+  background: var(--jp-layout-color1);
+  color: var(--jp-ui-font-color2);
+  cursor: pointer;
+  font-size: var(--jp-ui-font-size0);
+  line-height: 1.4;
+  padding: 1px 8px;
+  border-radius: 5px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.harness-codewrap:hover .harness-codecopy {
+  opacity: 1;
+}
+.harness-codecopy:hover {
+  color: var(--jp-ui-font-color0);
+  border-color: var(--jp-border-color1);
+}
