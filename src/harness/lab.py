@@ -1225,7 +1225,7 @@ def _answer_gist(content: str, n: int = 150) -> str:
     c = re.sub(r"```.*?```", "", content or "", flags=re.S)
     c = re.sub(r"@@HARNESS_\w+@@\S*", "", c)
     c = re.sub(r"(?m)^\s*#{1,6}\s*", "", c).replace("🤖", "").strip()
-    first = re.split(r"(?<=[.!?])\s", c, 1)[0] if c else ""
+    first = re.split(r"(?<=[.!?])\s", c, maxsplit=1)[0] if c else ""
     return _one_line(first or c, n)
 
 

@@ -9,7 +9,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
-PY="$ROOT/.venv-notebook/bin/python"
+# Which virtualenv to run from. Defaults to the 3.12 .venv-notebook; set HARNESS_VENV to switch
+# (e.g. HARNESS_VENV=.venv-315 to run the whole harness on Python 3.15).
+HARNESS_VENV="${HARNESS_VENV:-.venv-notebook}"
+PY="$ROOT/$HARNESS_VENV/bin/python"
+echo "· interpreter: $PY ($("$PY" --version 2>&1))"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export HARNESS_MODEL_PORT="${HARNESS_MODEL_PORT:-7777}"
 export HARNESS_THREADS="${HARNESS_THREADS:-8}"
