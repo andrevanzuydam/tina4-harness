@@ -2532,8 +2532,9 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
     # — run mypy on the result (the third oracle, after run-it and assert-value). On a type error,
     # retry feeding mypy's own message back; if it still won't check, insert the best attempt but flag
     # it HONESTLY rather than pretend the types are right. (Wrong types still RUN, so we paste and warn
-    # instead of deferring the way a runtime error does.)
-    if is_typing_edit and intent == "code" and not is_revision and not _stopped:
+    # instead of deferring the way a runtime error does.) NOTE: unlike the run-check above we do NOT
+    # skip revisions — a type-hint edit IS a revision, and mypy never executes the code, so it's safe.
+    if is_typing_edit and intent == "code" and not _stopped:
         mv = _FENCE.search(tidied)
         cand = mv.group(1) if mv else ""
         if cand and _valid_python(cand)[0]:

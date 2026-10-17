@@ -71,7 +71,10 @@ is the ground truth.
 - [x] `_is_typing_edit` routes only type instructions to the gate (3 positive, 3 negative)
 
 ## Bugs
-- (none)
+- [x] Gate never fired on real edits: its guard included `not is_revision`, but `is_revision = is_edit or …`,
+      so every type-hint edit (which IS an edit) was excluded. The run-check skips revisions because
+      re-RUNNING edited code can have side effects — but mypy never executes, so type-checking is safe on
+      revisions. Dropped `not is_revision` from the gate. Caught live: gate ran mypy 0× before, 1× after.
 
 ## Commits
 - (eval core) _typecheck + _typecheck_summary in lab.py; 5 deterministic + 1 live test; mypy dep — d5a1803
