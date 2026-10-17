@@ -31,3 +31,6 @@ Pillow>=10
 # Screen snapshot for the vision 'see what's on screen' feature (macOS)
 pyobjc-framework-Quartz; sys_platform == 'darwin'
 pytest>=8.0        # generated tests use pytest-style asserts + pytest.approx
+# Semantic-typing eval: _typecheck() runs mypy over code to prove type hints actually CHECK, not
+# just that a `->` is present. Dev/test dep, fully offline after install (ships its own typeshed).
+mypy>=1.8

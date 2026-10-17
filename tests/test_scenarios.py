@@ -114,6 +114,21 @@ def test_add_type_hints():
     assert valid(code) and "def greet" in code and "->" in code
 
 
+import importlib.util as _ilu  # noqa: E402
+
+needs_mypy = pytest.mark.skipif(_ilu.find_spec("mypy") is None, reason="[needs:mypy] pip install mypy")
+
+
+@needs_mypy
+def test_added_type_hints_actually_typecheck():
+    # SEMANTIC, not syntactic: the hints the model adds must TYPE-CHECK (real mypy), not just show a `->`
+    mode, out = chat("add type hints to this function", context=GOOD)
+    code = code_of(out)
+    assert valid(code) and "->" in code
+    r = lab._typecheck(code)
+    assert r["ok"], f"added hints don't type-check: {r['errors']}"
+
+
 def test_add_a_docstring():
     mode, out = chat("add a docstring to this", context=GOOD)
     code = code_of(out)

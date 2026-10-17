@@ -54,24 +54,25 @@ to the model) → if still failing, insert but flag honestly ("added types, but 
 is the ground truth.
 
 ## Scope
-- [ ] Add `mypy` to `requirements-notebook.txt` (dev/test dep; document it's offline after install)
-- [ ] `_typecheck(code, strict=False)` helper in `src/harness/lab.py` (tmp file + mypy subprocess + parse)
-- [ ] Deterministic unit tests for `_typecheck` (positive clean, negative caught, skip-if-mypy-absent)
-- [ ] Upgrade `test_add_type_hints` (or add a sibling) to assert the result **type-checks**, not just `->`
+- [x] Add `mypy` to `requirements-notebook.txt` (dev/test dep; offline after install) + installed in both venvs (mypy 2.4.0)
+- [x] `_typecheck(code, strict=False)` + `_typecheck_summary(res)` in `src/harness/lab.py` (tmp file + mypy subprocess + parse; never raises; skips if mypy absent)
+- [x] Deterministic unit tests for `_typecheck` (positive clean, 2 negatives, skip-if-mypy-absent, summary) — 5 tests in test_chat_logic.py
+- [x] Added a sibling live scenario `test_added_type_hints_actually_typecheck` asserting the model's hints TYPE-CHECK, not just `->`
 - [ ] (Stretch) wire `_typecheck` as a validation gate on the add-type-hints path: grounded retry + honest flag on failure
-- [ ] (Stretch) a live scenario: "add type hints to this" → result runs AND type-checks clean; plus a semantic negative probe
+- [x] (Stretch, positive half) live scenario: "add type hints to this" → result type-checks clean  — negative probe is the deterministic suite
 
-## Tests (written first, real — no mocks)
-- [ ] `_typecheck` returns ok on `def add(a: int, b: int) -> int: return a + b`
-- [ ] `_typecheck` returns NOT ok + "incompatible return" on `def add(a: int, b: int) -> str: return a + b`
-- [ ] `_typecheck` flags a bad call arg: `add("x", 1)` against `def add(a: int, b: int) -> int`
-- [ ] `_typecheck` degrades gracefully (skipped) when mypy isn't installed — guarded with skipif
-- [ ] live: a generated/edited typed function both runs (`_run_in_kernel`) and type-checks (`_typecheck`)
+## Tests (written first, real — no mocks) — asserts grounded in mypy 2.4.0's ACTUAL output
+- [x] `_typecheck` ok on `def add(a: int, b: int) -> int: return a + b`
+- [x] `_typecheck` NOT ok + 'return value type' on `-> str` over `return a + b` (real wording: `Incompatible return value type (got "int", expected "str")`)
+- [x] `_typecheck` flags bad call arg `add("x", 1)` ('incompatible type'; `Argument 1 to "add" has incompatible type "str"; expected "int"`)
+- [x] `_typecheck` degrades gracefully (skipped) when mypy isn't installed — monkeypatched find_spec
+- [x] `_typecheck_summary` reads human ('types check out' / 'does not type-check: …')
+- [x] live: the model's added hints TYPE-CHECK (`test_added_type_hints_actually_typecheck`)
 
 ## Bugs
-- (none yet)
+- (none)
 
 ## Commits
-- (pending)
+- (this milestone) _typecheck + _typecheck_summary in lab.py; 5 deterministic + 1 live test; mypy dep
 
-## Status: Planned (added 2026-10-17 at the owner's request; sits alongside plan/python-315.md)
+## Status: Core DONE — the eval ships (3.15 113 passed; 3.12 83 passed, 30 skipped). Remaining: the stretch self-check GATE on the add-type-hints path (generate → type-check → grounded retry → honest flag).

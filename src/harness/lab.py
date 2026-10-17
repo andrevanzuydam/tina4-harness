@@ -1354,6 +1354,67 @@ def _run_in_kernel(code: str, timeout: float = 8.0) -> dict:
     return res
 
 
+def _typecheck(code: str, strict: bool = False, timeout: float = 25.0) -> dict:
+    """Prove type annotations are SEMANTICALLY correct — that the code TYPE-CHECKS — not merely that a
+    `->` or `: T` is present. This is the third grounding oracle: _run_in_kernel answers "does it run?",
+    _assert_report answers "is the value right?", and this answers "do the types check out?" by running
+    a real static type checker (mypy) over the snippet, the same way we run code instead of trusting it.
+
+    mypy is a dev/test dependency and fully offline after install (it ships its own typeshed stubs). If
+    it isn't present this degrades to {"checked": False, "skipped": ...} and never raises into the chat
+    path — the harness still works offline without it. Deterministic: no cache, no incremental build,
+    imports not followed (we check the snippet, not the whole workspace).
+
+    Returns {"checked": bool, "ok": bool, "errors": [str], "skipped": str|None}. `ok` is True only when
+    mypy actually ran AND reported no errors. `strict=True` also flags MISSING annotations (a different
+    question from WRONG ones), so it is opt-in."""
+    import importlib.util as _ilu
+    import subprocess
+    import sys
+    import tempfile
+
+    res = {"checked": False, "ok": False, "errors": [], "skipped": None}
+    if not code.strip():
+        res["skipped"] = "empty"
+        return res
+    if _ilu.find_spec("mypy") is None:
+        res["skipped"] = "mypy not installed"
+        return res
+    proc = None
+    with tempfile.TemporaryDirectory(prefix="harness-typecheck-") as d:
+        path = os.path.join(d, "snippet.py")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(code if code.endswith("\n") else code + "\n")
+        cmd = [sys.executable, "-m", "mypy", path, "--no-incremental",
+               "--cache-dir", os.devnull, "--follow-imports", "silent",
+               "--no-error-summary", "--no-color-output"]
+        if strict:
+            cmd.append("--strict")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)  # noqa: S603
+        except Exception as e:  # mypy present but unrunnable — treat as skipped, never crash chat
+            res["skipped"] = f"mypy failed to run: {type(e).__name__}"
+            return res
+    res["checked"] = True
+    # mypy prints `snippet.py:LINE: error: MESSAGE  [code]`; keep the error text, drop the temp path.
+    for line in (proc.stdout or "").splitlines():
+        if ": error:" in line:
+            res["errors"].append(line.split(": error:", 1)[1].strip())
+    res["ok"] = proc.returncode == 0 and not res["errors"]
+    return res
+
+
+def _typecheck_summary(res: dict) -> str:
+    """A one-line, human-readable summary of a _typecheck result (for honest self-check messaging)."""
+    if res.get("skipped"):
+        return f"not type-checked ({res['skipped']})"
+    if res.get("ok"):
+        return "types check out"
+    errs = res.get("errors") or []
+    head = errs[0] if errs else "type error"
+    return f"does not type-check: {head}" + (f" (+{len(errs) - 1} more)" if len(errs) > 1 else "")
+
+
 _BUG_CLAIM = re.compile(
     r"\b(bugs?|broken|errors?|fix(?:ed|es)?|fixing|wrong|incorrect|fails?|failing|failure|"
     r"missing|doesn'?t|does not|won'?t|will not|never\s+returns?|syntaxerror|typeerror|"

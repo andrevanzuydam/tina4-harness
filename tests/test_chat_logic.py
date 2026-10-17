@@ -303,3 +303,52 @@ def test_evolving_context_retrieves_the_relevant_old_turn():
     sel = lab._evolving_context(msgs, "what is my favourite number?", keep_recent=5)
     joined = " ".join(m["content"] for m in sel)
     assert "42" in joined                         # BM25 recalled the early fact turn
+
+
+# --- semantic typing: does the code actually TYPE-CHECK, not just have a `->`? --------------------
+# The third grounding oracle. _run_in_kernel proves behaviour, _assert_report proves the value,
+# _typecheck proves the TYPES — by running real mypy, grounded in its actual output (not guessed).
+
+import importlib.util as _ilu  # noqa: E402
+
+import pytest  # noqa: E402
+
+needs_mypy = pytest.mark.skipif(_ilu.find_spec("mypy") is None, reason="[needs:mypy] pip install mypy")
+
+
+@needs_mypy
+def test_typecheck_passes_on_correct_annotations():
+    r = lab._typecheck("def add(a: int, b: int) -> int:\n    return a + b\n")
+    assert r["checked"] and r["ok"] and r["errors"] == []
+
+
+@needs_mypy
+def test_typecheck_catches_wrong_return_type():
+    # the arrow is PRESENT and the code RUNS — only the type checker exposes the lie
+    r = lab._typecheck("def add(a: int, b: int) -> str:\n    return a + b\n")
+    assert r["checked"] and not r["ok"]
+    assert any("return value type" in e.lower() for e in r["errors"])  # real mypy wording
+
+
+@needs_mypy
+def test_typecheck_catches_incompatible_call_argument():
+    code = 'def add(a: int, b: int) -> int:\n    return a + b\n\nadd("x", 1)\n'
+    r = lab._typecheck(code)
+    assert r["checked"] and not r["ok"]
+    assert any("incompatible type" in e.lower() for e in r["errors"])
+
+
+def test_typecheck_degrades_gracefully_without_mypy(monkeypatch):
+    # with no checker installed it must SKIP, never crash the chat path
+    real = _ilu.find_spec
+    monkeypatch.setattr(_ilu, "find_spec",
+                        lambda name, *a, **k: None if name == "mypy" else real(name, *a, **k))
+    r = lab._typecheck("def f(x: int) -> int:\n    return x\n")
+    assert r["checked"] is False and r["skipped"] == "mypy not installed"
+
+
+@needs_mypy
+def test_typecheck_summary_reads_like_a_human():
+    assert lab._typecheck_summary(lab._typecheck("def f(x: int) -> int:\n    return x\n")) == "types check out"
+    bad = lab._typecheck_summary(lab._typecheck("def f(x: int) -> str:\n    return x\n"))
+    assert bad.startswith("does not type-check:")

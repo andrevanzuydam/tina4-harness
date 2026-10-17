@@ -16,7 +16,7 @@ plan file is updated in the SAME turn progress is claimed.
 | Honest, self-checking, collaborative harness | [harness-honesty.md](harness-honesty.md) | ✅ Complete (living) |
 | Offline-user scenario quality gate | [scenario-quality-gate.md](scenario-quality-gate.md) | 🟡 Ongoing (living suite) |
 | Python 3.15 (run on it, test features, groundwire) | [python-315.md](python-315.md) | 🟡 Platform done; feature tests + groundwire in progress |
-| Semantic typing eval (type-check, not just `->`) | [semantic-typing-eval.md](semantic-typing-eval.md) | 📋 Planned |
+| Semantic typing eval (type-check, not just `->`) | [semantic-typing-eval.md](semantic-typing-eval.md) | 🟢 Core done; self-check gate pending |
 
 ## Conventions (tina4-developer-python)
 
