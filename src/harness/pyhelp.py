@@ -20,7 +20,13 @@ from pathlib import Path
 from .download import PROJECT_ROOT
 
 HELP_FILE = PROJECT_ROOT / "data" / "python-help.txt"
+# The Python 3.15 "what's new" paradigms, distilled into one chunked .md per feature/PEP. These ship
+# with the harness so a query about a 3.15 feature is grounded in real doc text (never a canned
+# answer string in code). Indexed separately from the big stdlib dump so the small, specific chunks
+# aren't drowned out by the ~5 MB pydoc corpus.
+PY315_DIR = PROJECT_ROOT / "data" / "python-3.15"
 _docs = None  # cached Groundwire index for this session
+_py315 = None  # cached Groundwire index over the 3.15 corpus
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 # Importing these for pydoc has side effects (antigravity opens a browser; this prints the Zen),
 # so we describe them from a short note instead of importing them.
@@ -81,6 +87,42 @@ def search(query: str, k: int | None = None) -> list[tuple[str, float]]:
     """Return the top (text, score) help chunks for a query."""
     gw = load()
     return [(text, score) for _cid, text, score in gw.retrieve(query, k=k)]
+
+
+def load_py315(k: int = 3, max_words: int = 150):
+    """Build (if needed) and index the Python 3.15 what's-new corpus with Groundwire. Cached per
+    session; clear the cache with ``_py315 = None`` or ``reset_py315()`` for a deterministic run.
+    Each chunk is tagged ``# file: <name>`` so the model can see which feature/PEP it came from."""
+    global _py315
+    if _py315 is not None:
+        return _py315
+    from groundwire import Groundwire
+
+    gw = Groundwire(memory="bm25", k=k, max_words=max_words)
+    if PY315_DIR.is_dir():
+        for f in sorted(PY315_DIR.glob("*.md")):
+            try:
+                gw.ingest_code(f.read_text(encoding="utf-8", errors="ignore"), title=f.name)
+            except Exception:
+                continue
+    _py315 = gw
+    return gw
+
+
+def reset_py315() -> None:
+    """Drop the cached 3.15 index (used by tests to force a deterministic rebuild)."""
+    global _py315
+    _py315 = None
+
+
+def search_py315(query: str, k: int = 3) -> list[tuple[str, float]]:
+    """Return the top (text, score) chunks from the Python 3.15 what's-new corpus for a query.
+    Each chunk carries its ``# file: <name>`` header so the source feature/PEP is visible."""
+    gw = load_py315(k=k)
+    try:
+        return [(text, score) for _cid, text, score in gw.retrieve(query, k=k)]
+    except Exception:
+        return []
 
 
 def _strip_think(text: str) -> str:

@@ -2168,6 +2168,16 @@ def _chat(messages: list, context: str = "", notebook_code: str = "", output: st
             docs = "\n\n".join(t[:600] for t, _s in pyhelp.search(query, k=2))
             if docs:
                 system_text += "\n\nRelevant Python documentation (use if helpful, ignore if not):\n" + docs
+            # Python 3.15 is newer than the small model's weights, so a question about a 3.15 feature
+            # is exactly where it guesses. When the query names a 3.15 paradigm, ground it in the
+            # distilled what's-new corpus (real doc text, retrieved — not a canned string).
+            if re.search(r"\b3\.15\b|\blazy import\b|\bfrozendict\b|\bsentinel\b|\btake_bytes\b|"
+                         r"\bprefixmatch\b|\bunpack\w*\b.*\bcomprehension|math\.integer|__cached__|"
+                         r"\bTaskGroup\.cancel\b", query, re.I):
+                py315_docs = "\n\n".join(t[:600] for t, _s in pyhelp.search_py315(query, k=2))
+                if py315_docs:
+                    system_text += ("\n\nPython 3.15 feature documentation (authoritative — this is "
+                                    "newer than your training; answer from it, do not guess):\n" + py315_docs)
         except Exception:
             pass
     # Endless chat with a BOUNDED prompt: recency (last turns) + Groundwire-retrieved relevant older
