@@ -1874,8 +1874,16 @@ class ChatPanel extends Widget {
             await this._offerCode(nb, code, sel, false, noRun);
           }
         }
-        if (!mp && !blocks.length) {
-          await this._append('assistant', '(no reply)');
+        if (!mp) {
+          // The whole reply was code with no prose. The code has just been applied to the cell
+          // (fix) or placed in cells (create), so if we append nothing the chat bubble is empty and
+          // the user asks "where's the reply?". Acknowledge what happened instead.
+          await this._append('assistant',
+            blocks.length
+              ? (mode === 'fix'
+                  ? (blocks.length > 1 ? '✓ Applied the fixes to the cell.' : '✓ Fixed the cell.')
+                  : (blocks.length > 1 ? `📝 Added ${blocks.length} cells.` : '📝 Added the code to a cell.'))
+              : '(no reply)');
         }
       }
       this._save();
