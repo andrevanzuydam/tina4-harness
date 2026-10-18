@@ -18,6 +18,10 @@ comparison. Verified on Apple Silicon (metal-gpu) with `mlx_vlm` 0.7.6.
   reasoning leaked into answers and the output-form router misread valid code as prose.
 - **The 2B stays the default.** Gemma matches it on task quality but costs ~3× the
   weights, ~1.9× peak memory, and ~1.6× latency — too much for an offline laptop tool.
+- **Gemma 4 E2B** (`mlx-community/gemma-4-e2b-it-4bit`, ~3.3 GB) is a smaller swap-in than
+  E4B (~5.2 GB) — same `<|turn>` / `<|channel>thought` template (see
+  [model-templates.md](model-templates.md)). Still ~2× the Qwen distill's 1.6 GB, so the
+  distill remains the default. Every knob for either model is in [tuning.md](tuning.md).
 
 ---
 

@@ -57,7 +57,7 @@ The cells hold the real code — read them, change them, re-run them:
 ## Run it
 
 ### Requirements
-- **Python 3.12**
+- **Python 3.12** (also runs on **3.15** — see [`docs/tuning.md`](docs/tuning.md) `HARNESS_VENV`)
 - **macOS (Apple Silicon)** → runs on **MLX** (Metal GPU, 4-bit weights, ~1.6 GB). Fast.
 - **Windows / Linux with an NVIDIA GPU** → the installer auto-detects the GPU (via `nvidia-smi`)
   and installs the **CUDA** build of PyTorch, so the model runs on the GPU in float16. Much faster.

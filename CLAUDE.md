@@ -53,12 +53,20 @@ Conventions that DO apply here (the spirit, not the scaffolding):
 - Vision + text use the same MLX weights (`describe()` normalises images to ~1.2M px first).
 - Grounding (Groundwire BM25) is offline: stdlib docs (`data/python-help.txt`), repo code, chat
   history, and bundled **tina4 docs** (`data/tina4-docs/{python,js}/`).
+- **Interpreter:** default `.venv-notebook` (Python 3.12). The harness also runs on **Python 3.15**
+  via a second venv — `HARNESS_VENV=.venv-315 ./scripts/start.sh` (3.12 stays as the fallback).
+- **Model swap:** `HARNESS_MLX_REPO=…` with no code change (Qwen distill default, Gemma swap-in).
+- **Reference docs** (`docs/`): [`tuning.md`](docs/tuning.md) (every env knob — temperature 0.2,
+  vision pixels ~1.2M, repetition, venv, server), [`model-templates.md`](docs/model-templates.md)
+  (the distill vs Gemma chat templates), [`gemma-model-swap.md`](docs/gemma-model-swap.md),
+  [`windows-gpu.md`](docs/windows-gpu.md). Update the relevant doc in the same change.
 
 ## Build the JupyterLab extension
 
 ```bash
 cd labext && jlpm build              # or: tsc --sourceMap && jupyter labextension build --development True .
-# then copy labext/tina4_harness_lab/labextension/ → .venv-notebook/share/jupyter/labextensions/tina4-harness-lab/
+# then copy labext/tina4_harness_lab/labextension/ → <venv>/share/jupyter/labextensions/tina4-harness-lab/
+# for EACH venv you run (.venv-notebook AND .venv-315). jlpm/jupyter-builder lives in .venv-notebook.
 ```
 A **kernel** change (`src/harness/*.py`) needs a kernel/lab restart; a **frontend** change needs a
 browser hard-refresh (Cmd-Shift-R) after redeploy.
@@ -66,12 +74,20 @@ browser hard-refresh (Cmd-Shift-R) after redeploy.
 ## Tests
 
 ```bash
-PYTHONPATH=src .venv-notebook/bin/python -m pytest tests/ -q
+PYTHONPATH=src .venv-notebook/bin/python -m pytest tests/ -q     # or .venv-315 for Python 3.15
 ```
 
 - `tests/test_harness.py` — model/download plumbing.
-- `tests/test_chat_logic.py` — the chat/help/fix/assertion/choices/offline/vision/tina4-docs logic
-  (all deterministic, no model, no network).
+- `tests/test_chat_logic.py` — the chat/help/fix/assertion/choices/offline/vision/tina4-docs logic,
+  plus the **semantic-typing** oracle (`_typecheck` runs real mypy) and routing helpers
+  (`_is_typing_edit`, `_is_implement_followup`). All deterministic — no model, no network.
+- `tests/test_scenarios.py` — LIVE outcome-evals against the real model server (skips if it's down).
+- `tests/test_py315_features.py` — executable tests for every Python 3.15 feature, each
+  `skipif(sys.version_info < (3,15))` so they run on `.venv-315` and skip on the 3.12 fallback.
+
+**Three grounding oracles** keep the model honest before anything is pasted — run the code
+(`_run_in_kernel`), check the value (`_assert_report`), and check the types (`_typecheck`, mypy).
+A code reply never ships a result the harness has not verified.
 
 ## Offline note
 
