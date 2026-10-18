@@ -67,6 +67,13 @@ the pixel count matters.
 | `HARNESS_REPOS_DIR` / `HARNESS_NOTEBOOK_DIR` | `notebooks/` | The workspace/grounding root (clones land here; grounding indexes it). |
 | `HARNESS_LOG_INTERACTIONS` | `1` (on) | Log every model interaction to `logs/model-interactions.jsonl`. Set `0` to disable. |
 
+## Prompt caching
+
+**None.** The server re-prefills the whole prompt every request — no KV-prefix reuse across turns.
+mlx_vlm's native prefix cache was prototyped and measured at ~1.0× (the model's `ArraysCache` can't
+be trimmed), so it was not adopted. Full evidence + how to revisit: [prompt-cache.md](prompt-cache.md)
+(`scripts/bench_prompt_cache.py`).
+
 ## In-UI sliders (not env)
 
 The teaching notebook exposes two live knobs via widgets: **temperature** and the MLX **cache
